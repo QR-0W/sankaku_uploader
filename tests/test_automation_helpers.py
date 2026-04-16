@@ -18,18 +18,28 @@ class FakeLocator:
 
 
 class FakePage:
-    def __init__(self, mapping: dict[str, str | None], eval_tags: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        mapping: dict[str, str | None],
+        eval_tags: list[str] | None = None,
+        eval_buttons: list[str] | None = None,
+    ) -> None:
         self.mapping = mapping
         self.eval_tags = eval_tags
+        self.eval_buttons = eval_buttons
 
     def locator(self, selector: str):
         text = self.mapping.get(selector)
         return FakeLocator(text, 1 if text is not None else 0)
 
-    def evaluate(self, _script: str, _selectors):
-        if self.eval_tags is None:
+    def evaluate(self, _script: str, *args):
+        if args:
+            if self.eval_tags is None:
+                raise RuntimeError("evaluate not supported")
+            return self.eval_tags
+        if self.eval_buttons is None:
             raise RuntimeError("evaluate not supported")
-        return self.eval_tags
+        return self.eval_buttons
 
 
 def test_extract_post_id() -> None:
@@ -46,3 +56,8 @@ def test_extract_ai_tags() -> None:
 def test_extract_ai_tags_prefers_dom_scan_and_dedupes() -> None:
     page = FakePage({}, eval_tags=["tag-a", "Tag-A", "tag-b", " "])
     assert extract_ai_tags(page) == ["tag-a", "tag-b"]
+
+
+def test_extract_ai_tags_fallback_to_button_candidates() -> None:
+    page = FakePage({}, eval_buttons=["Create post", "multiple_views", "1girl", "Advanced"])
+    assert extract_ai_tags(page) == ["multiple_views", "1girl"]

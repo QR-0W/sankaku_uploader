@@ -18,9 +18,10 @@ def test_run_upload_task_uses_auto_submit_and_headless(monkeypatch, tmp_path: Pa
     captured: dict[str, object] = {}
 
     class DummyClient:
-        def __init__(self, config, review_decision_provider=None):
+        def __init__(self, config, review_decision_provider=None, trace_hook=None):
             captured["config"] = config
             captured["provider"] = review_decision_provider
+            captured["trace_hook"] = trace_hook
 
         def upload_items(self, items, *, diff_mode=False):
             return [
@@ -54,15 +55,17 @@ def test_run_upload_task_uses_auto_submit_and_headless(monkeypatch, tmp_path: Pa
     assert cfg.run_mode == "auto_submit"
     assert cfg.headless is True
     assert captured["provider"] is None
+    assert callable(captured["trace_hook"])
 
 
 def test_run_upload_task_manual_review_keeps_provider(monkeypatch, tmp_path: Path) -> None:
     captured: dict[str, object] = {}
 
     class DummyClient:
-        def __init__(self, config, review_decision_provider=None):
+        def __init__(self, config, review_decision_provider=None, trace_hook=None):
             captured["config"] = config
             captured["provider"] = review_decision_provider
+            captured["trace_hook"] = trace_hook
 
         def upload_items(self, items, *, diff_mode=False):
             return [
@@ -96,3 +99,4 @@ def test_run_upload_task_manual_review_keeps_provider(monkeypatch, tmp_path: Pat
     assert cfg.run_mode == "auto_submit"
     assert cfg.headless is True
     assert callable(captured["provider"])
+    assert callable(captured["trace_hook"])

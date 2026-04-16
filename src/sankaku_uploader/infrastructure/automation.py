@@ -13,6 +13,7 @@ from sankaku_uploader.domain import UploadItem
 
 TagDecision = Literal["confirm", "skip", "retry"]
 ReviewDecisionProvider = Callable[[UploadItem, list[str], bool], TagDecision]
+TraceHook = Callable[[str], None]
 
 FILE_INPUT_SELECTORS: tuple[str, ...] = (
     "input[type='file']",
@@ -134,6 +135,9 @@ def extract_ai_tags(page, selectors: Iterable[str] = AI_TAG_SELECTORS) -> list[s
         tags = _normalize_tags([part.strip() for part in re.split(r"[\n,;]+", text) if part.strip()])
         if tags:
             return tags
+    button_tags = _extract_tag_candidates_from_buttons(page)
+    if button_tags:
+        return button_tags
     return []
 
 
@@ -191,6 +195,48 @@ def _normalize_tags(values: Iterable[str]) -> list[str]:
     return normalized
 
 
+def _extract_tag_candidates_from_buttons(page) -> list[str]:
+    try:
+        raw = page.evaluate(
+            """
+            () => Array.from(document.querySelectorAll("button"))
+              .map((el) => String(el.textContent || "").trim())
+              .filter(Boolean)
+            """
+        )
+    except Exception:
+        return []
+
+    if not isinstance(raw, list):
+        return []
+
+    blocked = {
+        "upload",
+        "upload file",
+        "create post",
+        "submit",
+        "advanced",
+        "close",
+        "retry",
+        "try again",
+        "cancel",
+        "skip",
+        "confirm",
+        "manual",
+        "auto",
+        "open",
+    }
+    candidates: list[str] = []
+    for entry in raw:
+        text = str(entry).strip()
+        low = text.lower()
+        if low in blocked:
+            continue
+        if re.fullmatch(r"[A-Za-z0-9_:\-]{2,48}", text):
+            candidates.append(text)
+    return _normalize_tags(candidates)
+
+
 def wait_for_ai_tags(page, timeout_seconds: float, poll_interval_seconds: float) -> tuple[list[str], bool]:
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
@@ -230,13 +276,31 @@ def find_button_by_text(page, candidates: tuple[str, ...]):
 
 
 class SankakuAutomationClient:
-    def __init__(self, config: AutomationConfig, review_decision_provider: ReviewDecisionProvider | None = None) -> None:
+    def __init__(
+        self,
+        config: AutomationConfig,
+        review_decision_provider: ReviewDecisionProvider | None = None,
+        trace_hook: TraceHook | None = None,
+    ) -> None:
         self.config = config
         self.review_decision_provider = review_decision_provider
+        self.trace_hook = trace_hook
+
+    def _trace(self, message: str) -> None:
+        if self.trace_hook is None:
+            return
+        try:
+            self.trace_hook(message)
+        except Exception:
+            return
 
     def upload_items(self, items: list[UploadItem], *, diff_mode: bool = False) -> list[AutomationUploadResult]:
         results: list[AutomationUploadResult] = []
         self.config.profile_dir.mkdir(parents=True, exist_ok=True)
+        self._trace(
+            f"automation start: items={len(items)} diff_mode={diff_mode} headless={self.config.headless} "
+            f"channel={self.config.browser_channel} profile_dir={self.config.profile_dir}"
+        )
 
         with sync_playwright() as p:
             launch_kwargs = {
@@ -250,10 +314,12 @@ class SankakuAutomationClient:
                 page = context.pages[0] if context.pages else context.new_page()
                 root_post_id = ""
                 for idx, item in enumerate(items):
+                    self._trace(f"[{idx+1}/{len(items)}] open upload page for item={item.file_name} item_id={item.item_id}")
                     page.goto(self.config.upload_url, wait_until="domcontentloaded")
                     self._dismiss_common_overlays(page)
                     ready, reason = self._wait_until_upload_surface_ready(page)
                     if not ready:
+                        self._trace(f"upload surface not ready for {item.file_name}: {reason}")
                         results.append(
                             AutomationUploadResult(
                                 item_id=item.item_id,
@@ -265,6 +331,8 @@ class SankakuAutomationClient:
                         continue
                     known_post_ids = self._collect_known_post_ids(context)
                     parent_post_id = root_post_id if diff_mode and idx > 0 else ""
+                    if parent_post_id:
+                        self._trace(f"{item.file_name}: using parent_post_id={parent_post_id}")
                     result = self._upload_one(
                         page,
                         context,
@@ -275,6 +343,7 @@ class SankakuAutomationClient:
                     results.append(result)
                     if diff_mode and idx == 0 and result.post_id:
                         root_post_id = result.post_id
+                        self._trace(f"root post id established: {root_post_id}")
                     if diff_mode and idx > 0 and not root_post_id:
                         result.success = False
                         result.error = "root post id missing in diff mode"
@@ -287,19 +356,25 @@ class SankakuAutomationClient:
             self._dismiss_common_overlays(page)
             selected_by = self._select_file(page, Path(item.file_path))
             if not selected_by:
+                self._trace(f"{item.file_name}: file selection failed")
                 return AutomationUploadResult(item_id=item.item_id, success=False, tag_state="failed", error="cannot set file")
+            self._trace(f"{item.file_name}: file selected via {selected_by}")
 
             if parent_post_id:
                 self._ensure_advanced_panel_open(page)
                 parent_input = find_first_locator(page, PARENT_ID_SELECTORS)
                 if parent_input is not None:
                     parent_input.fill(parent_post_id)
+                    self._trace(f"{item.file_name}: parent input filled")
+                else:
+                    self._trace(f"{item.file_name}: parent input not found")
 
             tags, available = wait_for_ai_tags(
                 page,
                 timeout_seconds=self.config.ai_timeout_seconds,
                 poll_interval_seconds=self.config.poll_interval_seconds,
             )
+            self._trace(f"{item.file_name}: tag detect available={available} count={len(tags)} tags={tags[:8]}")
 
             if self.config.run_mode == "manual_assist":
                 uploaded_url, post_id = self._wait_for_uploaded_post(
@@ -308,6 +383,7 @@ class SankakuAutomationClient:
                     ignore_post_ids=known_post_ids,
                 )
                 if not post_id:
+                    self._trace(f"{item.file_name}: manual assist timed out waiting post id, last_url={uploaded_url}")
                     return AutomationUploadResult(
                         item_id=item.item_id,
                         success=False,
@@ -326,6 +402,7 @@ class SankakuAutomationClient:
                 )
 
             decision = self._review_decision(item, tags, available)
+            self._trace(f"{item.file_name}: review decision={decision}")
             if decision == "skip":
                 return AutomationUploadResult(item_id=item.item_id, success=False, ai_tags=tags, tag_state="skipped", error="skipped by user")
             if decision == "retry":
@@ -333,8 +410,10 @@ class SankakuAutomationClient:
 
             submit = self._wait_for_submit(page)
             if submit is None:
+                self._trace(f"{item.file_name}: submit button unavailable")
                 return AutomationUploadResult(item_id=item.item_id, success=False, ai_tags=tags, tag_state="failed", error="submit button unavailable")
             submit.click()
+            self._trace(f"{item.file_name}: submit clicked")
             try:
                 page.wait_for_load_state("networkidle", timeout=10_000)
             except PlaywrightTimeoutError:
@@ -347,10 +426,12 @@ class SankakuAutomationClient:
             )
             if not post_id:
                 tag_fix = self._try_apply_minimum_tag(page, tags)
+                self._trace(f"{item.file_name}: first submit got no post_id, tag_fix_applied={tag_fix}")
                 if tag_fix:
                     submit_retry = self._wait_for_submit(page)
                     if submit_retry is not None:
                         submit_retry.click()
+                        self._trace(f"{item.file_name}: retry submit clicked after tag fix")
                         try:
                             page.wait_for_load_state("networkidle", timeout=10_000)
                         except PlaywrightTimeoutError:
@@ -362,6 +443,7 @@ class SankakuAutomationClient:
                             ignore_post_ids=known_post_ids,
                         )
                 if not post_id:
+                    self._trace(f"{item.file_name}: failed to detect post_id after retry, last_url={uploaded_url}")
                     return AutomationUploadResult(
                         item_id=item.item_id,
                         success=False,
@@ -370,6 +452,7 @@ class SankakuAutomationClient:
                         uploaded_url=uploaded_url,
                         error="submit completed but no post id detected; site may require manual tag selection/edit before posting",
                     )
+            self._trace(f"{item.file_name}: upload success post_id={post_id} url={uploaded_url}")
             return AutomationUploadResult(
                 item_id=item.item_id,
                 success=True,
@@ -379,6 +462,7 @@ class SankakuAutomationClient:
                 post_id=post_id,
             )
         except Exception as exc:
+            self._trace(f"{item.file_name}: exception during upload: {exc}")
             return AutomationUploadResult(item_id=item.item_id, success=False, tag_state="failed", error=str(exc))
 
     def _wait_until_upload_surface_ready(self, page) -> tuple[bool, str]:
@@ -499,10 +583,12 @@ class SankakuAutomationClient:
             last_url = self._safe_url(page)
             post_id = extract_post_id(last_url)
             if post_id and post_id not in ignore:
+                self._trace(f"post detected on active page: post_id={post_id} url={last_url}")
                 return last_url, post_id
             if context is not None:
                 ctx_url, ctx_post_id = self._find_post_in_context(context, ignore_post_ids=ignore)
                 if ctx_post_id:
+                    self._trace(f"post detected on context page: post_id={ctx_post_id} url={ctx_url}")
                     return ctx_url, ctx_post_id
             time.sleep(self.config.poll_interval_seconds)
         return last_url, ""

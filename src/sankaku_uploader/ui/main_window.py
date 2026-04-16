@@ -535,6 +535,8 @@ class MainWindow(QMainWindow):
         for event in self.runner.poll():
             if event.kind == "task_started":
                 self._append_log(f"[Worker] 任务启动：{event.payload.get('task_name')}")
+            elif event.kind == "log":
+                self._append_log(f"[Trace] {event.payload.get('message', '')}")
             elif event.kind == "item_status":
                 self._on_item_status(event.payload)
             elif event.kind == "item_review":

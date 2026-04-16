@@ -33,6 +33,9 @@ def _run_upload_task(task_payload: dict[str, Any], settings_payload: dict[str, A
     def emit(kind: str, payload: dict[str, Any]) -> None:
         out_queue.put(WorkerEvent(kind, payload).to_json())
 
+    def trace(message: str) -> None:
+        emit("log", {"message": message})
+
     def review_provider(item, tags, available):
         emit(
             "item_review",
@@ -61,6 +64,10 @@ def _run_upload_task(task_payload: dict[str, Any], settings_payload: dict[str, A
         return "skip"
 
     emit("task_started", {"task_id": task.task_id, "task_name": task.task_name, "task_type": task.task_type.value})
+    trace(
+        f"runner config: review_mode={settings.review_mode.value} headless={settings.headless} "
+        f"profile_dir={settings.profile_dir} channel={settings.browser_channel}"
+    )
 
     needs_manual_review = settings.review_mode.value == "manual_review"
 
@@ -73,6 +80,7 @@ def _run_upload_task(task_payload: dict[str, Any], settings_payload: dict[str, A
             run_mode="auto_submit",
         ),
         review_decision_provider=review_provider if needs_manual_review else None,
+        trace_hook=trace,
     )
 
     pending_items = task.pending_items()
