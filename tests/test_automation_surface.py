@@ -386,7 +386,7 @@ def test_upload_items_uses_concurrent_path_for_normal_batches(monkeypatch) -> No
     monkeypatch.setattr(
         client,
         "_upload_normal_batch_concurrent",
-        lambda _context, items: calls.append(len(items)) or [],
+        lambda _context, items, _callback: calls.append(len(items)) or [],
     )
 
     class FakeChromium:

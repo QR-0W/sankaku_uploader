@@ -147,14 +147,9 @@ def _run_upload_task(task_payload: dict[str, Any], settings_payload: dict[str, A
             },
         )
 
-    results = client.upload_items(
-        pending_items,
-        diff_mode=task.task_type is TaskType.DIFF_GROUP,
-        manual_root_post_id=task.manual_root_post_id,
-    )
-
     has_failures = False
-    for result in results:
+    def result_callback(result):
+        nonlocal has_failures
         if not result.success:
             has_failures = True
         emit(
@@ -170,6 +165,13 @@ def _run_upload_task(task_payload: dict[str, Any], settings_payload: dict[str, A
                 "error": result.error,
             },
         )
+
+    results = client.upload_items(
+        pending_items,
+        diff_mode=task.task_type is TaskType.DIFF_GROUP,
+        manual_root_post_id=task.manual_root_post_id,
+        item_result_callback=result_callback,
+    )
 
     emit(
         "task_complete",

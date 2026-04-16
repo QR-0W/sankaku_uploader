@@ -414,15 +414,22 @@ def find_first_locator(page, selectors: tuple[str, ...]):
 def find_button_by_text(page, candidates: tuple[str, ...]):
     normalized_candidates = [re.sub(r"\s+", "", candidate).lower() for candidate in candidates]
     try:
-        buttons = page.locator("button")
-        for idx in range(buttons.count()):
-            loc = buttons.nth(idx)
+        # Search for buttons, links, and divs with role=button
+        locators = page.locator("button, a, [role='button']")
+        for idx in range(locators.count()):
+            loc = locators.nth(idx)
             try:
+                # Check inner text
                 text = re.sub(r"\s+", "", loc.inner_text()).lower()
+                # Check aria-label and title
+                aria_label = (loc.get_attribute("aria-label") or "").lower().strip()
+                title = (loc.get_attribute("title") or "").lower().strip()
+                
+                if any(candidate in text or candidate in aria_label or candidate in title 
+                       for candidate in normalized_candidates) and loc.is_enabled():
+                    return loc
             except Exception:
                 continue
-            if any(candidate in text for candidate in normalized_candidates) and loc.is_enabled():
-                return loc
     except Exception:
         return None
     return None
@@ -448,7 +455,12 @@ class SankakuAutomationClient:
             return
 
     def upload_items(
-        self, items: list[UploadItem], *, diff_mode: bool = False, manual_root_post_id: str = ""
+        self,
+        items: list[UploadItem],
+        *,
+        diff_mode: bool = False,
+        manual_root_post_id: str = "",
+        item_result_callback: Callable[[AutomationUploadResult], None] | None = None,
     ) -> list[AutomationUploadResult]:
         results: list[AutomationUploadResult] = []
         self.config.profile_dir.mkdir(parents=True, exist_ok=True)
@@ -471,7 +483,7 @@ class SankakuAutomationClient:
             context = p.chromium.launch_persistent_context(**launch_kwargs)
             try:
                 if not diff_mode and len(items) > 1:
-                    return self._upload_normal_batch_concurrent(context, items)
+                    return self._upload_normal_batch_concurrent(context, items, item_result_callback)
 
                 page = self._select_working_page(context)
                 self._close_extra_pages(context, keep_page=page)
@@ -508,6 +520,11 @@ class SankakuAutomationClient:
                         known_post_ids=known_post_ids,
                     )
                     results.append(result)
+                    if item_result_callback:
+                        try:
+                            item_result_callback(result)
+                        except Exception:
+                            pass
                     if diff_mode and not root_post_id and idx == 0 and result.post_id:
                         root_post_id = result.post_id
                         self._trace(f"root post id established from upload: {root_post_id}")
@@ -521,7 +538,12 @@ class SankakuAutomationClient:
                 context.close()
         return results
 
-    def _upload_normal_batch_concurrent(self, context, items: list[UploadItem]) -> list[AutomationUploadResult]:
+    def _upload_normal_batch_concurrent(
+        self,
+        context,
+        items: list[UploadItem],
+        item_result_callback: Callable[[AutomationUploadResult], None] | None,
+    ) -> list[AutomationUploadResult]:
         results: list[AutomationUploadResult] = []
         chunk_size = max(1, min(int(self.config.max_concurrent_pages or 1), len(items)))
         self._trace(f"normal batch concurrent mode: pages={chunk_size} items={len(items)}")
@@ -569,6 +591,11 @@ class SankakuAutomationClient:
                 prepared_upload.known_post_ids = self._collect_known_post_ids(context)
                 result = self._review_and_submit_prepared(prepared_upload, context)
                 results.append(result)
+                if item_result_callback:
+                    try:
+                        item_result_callback(result)
+                    except Exception:
+                        pass
                 self._detach_prepared_upload(prepared_upload)
 
             self._close_extra_pages(context, keep_page=keep_page)
@@ -949,15 +976,24 @@ class SankakuAutomationClient:
                     return
             except Exception:
                 continue
-        # Panel is closed — click the Advanced button to open it
-        advanced = find_button_by_text(page, ("advanced", "高级", "高级选项"))
-        if advanced is None:
+        
+        # Try specifically by aria-label first (most stable)
+        advanced = page.locator("button[aria-label='advanced'], [aria-label='advanced']").first
+        if advanced.count() == 0 or not advanced.is_visible():
+            # Fallback to text search
+            advanced = find_button_by_text(page, ("advanced", "高级", "高级选项"))
+        
+        if advanced is None or (hasattr(advanced, "count") and advanced.count() == 0):
+            self._trace("advanced expansion button not found")
             return
+            
         try:
             advanced.click()
-            # Give the panel time to animate open
-            time.sleep(0.4)
-        except Exception:
+            self._trace("advanced panel expansion clicked")
+            # Give the panel time to animate open and elements to become visible
+            time.sleep(1.0)
+        except Exception as e:
+            self._trace(f"failed to click advanced button: {e}")
             return
 
     def _try_apply_minimum_tag(self, page, tags: list[str]) -> bool:

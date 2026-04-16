@@ -23,8 +23,8 @@ def test_run_upload_task_uses_auto_submit_and_headless(monkeypatch, tmp_path: Pa
             captured["provider"] = review_decision_provider
             captured["trace_hook"] = trace_hook
 
-        def upload_items(self, items, *, diff_mode=False, manual_root_post_id=""):
-            return [
+        def upload_items(self, items, *, diff_mode=False, manual_root_post_id="", item_result_callback=None):
+            results = [
                 SimpleNamespace(
                     item_id=item.item_id,
                     success=True,
@@ -36,6 +36,10 @@ def test_run_upload_task_uses_auto_submit_and_headless(monkeypatch, tmp_path: Pa
                 )
                 for item in items
             ]
+            if item_result_callback:
+                for r in results:
+                    item_result_callback(r)
+            return results
 
     monkeypatch.setattr(upload_runner, "SankakuAutomationClient", DummyClient)
 
@@ -69,8 +73,8 @@ def test_run_upload_task_manual_review_keeps_provider(monkeypatch, tmp_path: Pat
             captured["provider"] = review_decision_provider
             captured["trace_hook"] = trace_hook
 
-        def upload_items(self, items, *, diff_mode=False, manual_root_post_id=""):
-            return [
+        def upload_items(self, items, *, diff_mode=False, manual_root_post_id="", item_result_callback=None):
+            results = [
                 SimpleNamespace(
                     item_id=item.item_id,
                     success=True,
@@ -82,6 +86,10 @@ def test_run_upload_task_manual_review_keeps_provider(monkeypatch, tmp_path: Pat
                 )
                 for item in items
             ]
+            if item_result_callback:
+                for r in results:
+                    item_result_callback(r)
+            return results
 
     monkeypatch.setattr(upload_runner, "SankakuAutomationClient", DummyClient)
 
@@ -121,12 +129,12 @@ def test_manual_review_provider_preserves_commands_for_other_items(monkeypatch, 
         def __init__(self, config, review_decision_provider=None, trace_hook=None):
             self.review_decision_provider = review_decision_provider
 
-        def upload_items(self, items, *, diff_mode=False, manual_root_post_id=""):
+        def upload_items(self, items, *, diff_mode=False, manual_root_post_id="", item_result_callback=None):
             first = self.review_decision_provider(items[0], ["first"], True)
             second = self.review_decision_provider(items[1], ["second"], True)
             decisions.append((items[0].item_id, None if first is None else first.action))
             decisions.append((items[1].item_id, None if second is None else second.action))
-            return [
+            results = [
                 SimpleNamespace(
                     item_id=item.item_id,
                     success=True,
@@ -138,6 +146,10 @@ def test_manual_review_provider_preserves_commands_for_other_items(monkeypatch, 
                 )
                 for i, item in enumerate(items)
             ]
+            if item_result_callback:
+                for r in results:
+                    item_result_callback(r)
+            return results
 
     monkeypatch.setattr(upload_runner, "SankakuAutomationClient", DummyClient)
 
