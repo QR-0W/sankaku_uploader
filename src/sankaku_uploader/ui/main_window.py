@@ -339,7 +339,7 @@ class MainWindow(QMainWindow):
             color = "#ff9800"
             
         escaped = html.escape(message)
-        self.log.appendHtml(f'<span style="color: {color};">{escaped}</span>')
+        self.log.append(f'<span style="color: {color};">{escaped}</span>')
 
     def _load_settings_to_ui(self) -> None:
         self.upload_url_edit.setText(self.settings.upload_page_url)
