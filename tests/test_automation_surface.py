@@ -298,3 +298,24 @@ def test_sync_tags_after_review_returns_empty_when_editor_cleared(monkeypatch) -
     monkeypatch.setattr("sankaku_uploader.infrastructure.automation.time.sleep", lambda *_: None)
     tags = client._sync_tags_after_review(object(), baseline_tags=["a", "b"])
     assert tags == []
+
+
+def test_review_decision_applies_live_sync_then_waits_for_confirm(monkeypatch) -> None:
+    client = _build_client()
+    page = FakePage({})
+    decisions = [
+        ReviewDecision(action="sync", tags_override=["a", "b"]),
+        ReviewDecision(action="confirm"),
+    ]
+    applied: list[list[str]] = []
+    monkeypatch.setattr(client, "_apply_tags_override", lambda _page, tags: applied.append(list(tags)) or True)
+    monkeypatch.setattr(
+        "sankaku_uploader.infrastructure.automation._extract_tags_from_editor_section",
+        lambda _page: (["web-tag"], False),
+    )
+    monkeypatch.setattr("sankaku_uploader.infrastructure.automation.time.sleep", lambda *_: None)
+    client.review_decision_provider = lambda *_: decisions.pop(0) if decisions else None
+
+    result = client._review_decision(page, SimpleNamespace(item_id="i1", file_name="x.png"), ["base"], True)
+    assert result.action == "confirm"
+    assert applied == [["a", "b"]]

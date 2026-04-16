@@ -77,9 +77,16 @@ def _run_upload_task(task_payload: dict[str, Any], settings_payload: dict[str, A
             except Exception:
                 return None
             command = WorkerEvent.from_json(raw)
-            if command.kind != "decision":
-                continue
             if command.payload.get("item_id") != item.item_id:
+                continue
+            if command.kind == "tag_sync":
+                payload_tags = command.payload.get("tags")
+                if isinstance(payload_tags, list):
+                    tags_override = [str(tag).strip() for tag in payload_tags if str(tag).strip()]
+                else:
+                    tags_override = []
+                return ReviewDecision(action="sync", tags_override=tags_override)
+            if command.kind != "decision":
                 continue
             action = str(command.payload.get("action") or "").strip().lower()
             if action in {"confirm", "skip", "retry"}:
@@ -201,6 +208,9 @@ class UploadRunnerController:
             payload["tags_override"] = list(tags_override)
             payload["tags_override_allow_empty"] = bool(tags_override_allow_empty)
         self.commands.put(WorkerEvent("decision", payload).to_json())
+
+    def send_tag_sync(self, item_id: str, tags: list[str]) -> None:
+        self.commands.put(WorkerEvent("tag_sync", {"item_id": item_id, "tags": list(tags)}).to_json())
 
     def poll(self) -> list[WorkerEvent]:
         events: list[WorkerEvent] = []

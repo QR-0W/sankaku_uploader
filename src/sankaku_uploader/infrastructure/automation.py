@@ -12,7 +12,7 @@ from playwright.sync_api import sync_playwright
 
 from sankaku_uploader.domain import UploadItem
 
-TagDecision = Literal["confirm", "skip", "retry"]
+TagDecision = Literal["confirm", "skip", "retry", "sync"]
 @dataclass(slots=True)
 class ReviewDecision:
     action: TagDecision
@@ -983,6 +983,12 @@ class SankakuAutomationClient:
             decision = self.review_decision_provider(item, list(current_tags), available)
             parsed = self._normalize_review_decision(decision)
             if parsed is not None:
+                if parsed.action == "sync" and parsed.tags_override is not None:
+                    applied = self._apply_tags_override(page, parsed.tags_override)
+                    self._trace(
+                        f"{item.file_name}: live sync applied count={len(parsed.tags_override)} success={applied}"
+                    )
+                    continue
                 return parsed
             time.sleep(min(self.config.poll_interval_seconds, 0.2))
 
@@ -993,10 +999,10 @@ class SankakuAutomationClient:
         if decision is None:
             return None
         if isinstance(decision, ReviewDecision):
-            if decision.action in {"confirm", "skip", "retry"}:
+            if decision.action in {"confirm", "skip", "retry", "sync"}:
                 return decision
             return ReviewDecision("confirm")
-        if decision in {"confirm", "skip", "retry"}:
+        if decision in {"confirm", "skip", "retry", "sync"}:
             return ReviewDecision(decision)
         return None
 

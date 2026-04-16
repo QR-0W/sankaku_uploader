@@ -100,3 +100,13 @@ def test_run_upload_task_manual_review_keeps_provider(monkeypatch, tmp_path: Pat
     assert cfg.headless is True
     assert callable(captured["provider"])
     assert callable(captured["trace_hook"])
+
+
+def test_upload_runner_controller_can_send_tag_sync() -> None:
+    controller = upload_runner.UploadRunnerController()
+    controller.send_tag_sync("item-1", ["a", "b"])
+    raw = controller.commands.get_nowait()
+    event = upload_runner.WorkerEvent.from_json(raw)
+    assert event.kind == "tag_sync"
+    assert event.payload["item_id"] == "item-1"
+    assert event.payload["tags"] == ["a", "b"]
