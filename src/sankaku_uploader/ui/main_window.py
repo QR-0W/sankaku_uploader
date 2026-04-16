@@ -337,6 +337,8 @@ class MainWindow(QMainWindow):
             color = "#f44336"
         elif any(x in message for x in ("等待", "Warning", "paused", "暂停", "skipped")):
             color = "#ff9800"
+        elif "[已存在]" in message:
+            color = "#00bcd4"
             
         escaped = html.escape(message)
         self.log.append(f'<span style="color: {color};">{escaped}</span>')
@@ -810,33 +812,38 @@ class MainWindow(QMainWindow):
         task_id = str(payload.get("task_id") or "")
         item_id = str(payload.get("item_id") or "")
         success = bool(payload.get("success"))
-        tags = list(payload.get("ai_tags") or [])
         post_id = str(payload.get("post_id") or "")
         error = str(payload.get("error") or "")
+        is_duplicate = bool(payload.get("is_duplicate"))
 
-        status = ItemStatus.SUCCESS if success else ItemStatus.FAILED
-        if not success:
+        if is_duplicate:
+            status = ItemStatus.DUPLICATE
+            detail = f"[已存在] {payload.get('file_name')} -> 帖子 #{post_id}"
+        elif success:
+            status = ItemStatus.SUCCESS
+            detail = f"完成：{payload.get('file_name')} (ID: {post_id})"
+        else:
+            status = ItemStatus.FAILED
             tag_state = str(payload.get("tag_state") or "")
             if tag_state == "tag_error":
                 status = ItemStatus.TAG_ERROR
-            elif tag_state == "duplicate":
-                status = ItemStatus.DUPLICATE
-                
+                detail = f"失败：{payload.get('file_name')} (需要手动检查 AI 标签)"
+            else:
+                detail = f"失败：{payload.get('file_name')} - {error}"
+
         if success:
             self.pending_review_item_ids.discard(item_id)
             if self.pending_review_item_id == item_id:
                 self.pending_review_item_id = next(iter(self.pending_review_item_ids), None)
+
         self.service.update_item_result(
             task_id,
             item_id,
             status=status,
-            final_tags=tags,
+            final_tags=list(payload.get("ai_tags") or []),
             post_id=post_id,
             error=error,
         )
-        detail = f"结果: item={item_id} success={success} post_id={post_id or '-'}"
-        if error:
-            detail += f" error={error}"
         self._append_log(detail)
         self._render_active_task()
 

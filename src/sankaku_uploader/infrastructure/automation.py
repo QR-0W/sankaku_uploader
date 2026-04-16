@@ -107,6 +107,7 @@ class AutomationUploadResult:
     uploaded_url: str = ""
     tag_state: str = "ok"
     error: str = ""
+    is_duplicate: bool = False
 
 
 @dataclass(slots=True)
@@ -887,15 +888,28 @@ class SankakuAutomationClient:
                 ignore_post_ids=known_post_ids,
             )
             if not post_id:
-                alert_type = self._detect_page_alerts(page)
+                alert_type, alert_text = self._detect_page_alerts(page)
                 if alert_type == "duplicate":
+                    existing_id = ""
+                    # Try to extract ID from alert text
+                    match_id = re.search(r"#( [A-Za-z0-9]{5,32}|[A-Za-z0-9]{5,32})", alert_text)
+                    if not match_id:
+                        # Try searching for numeric ID or common post ID patterns in the text
+                        match_id = re.search(r"(?:posts/|post #|post |#)(\w+)", alert_text, re.I)
+                    
+                    if match_id:
+                        existing_id = match_id.group(1).strip()
+                        self._trace(f"{item.file_name}: extracted existing post_id={existing_id} from alert")
+                    
                     self._trace(f"{item.file_name}: Sankaku reported file already exists (duplicate)")
                     return AutomationUploadResult(
                         item_id=item.item_id,
-                        success=False,
+                        success=True, # We consider it "success" because it's on the site
                         ai_tags=tags,
                         tag_state="duplicate",
-                        error="duplicate_post",
+                        post_id=existing_id,
+                        uploaded_url=self._build_post_url(existing_id) if existing_id else "",
+                        is_duplicate=True,
                     )
                 
                 if alert_type == "tag_check_required" and attempt < 3:
@@ -935,7 +949,7 @@ class SankakuAutomationClient:
                     uploaded_url = self._build_post_url(post_id)
                     self._trace(f"{item.file_name}: fallback to response-captured post id={post_id}")
                 if not post_id:
-                    alert_type = self._detect_page_alerts(page)
+                    alert_type, alert_text = self._detect_page_alerts(page)
                     error_code = "tag_check_required" if alert_type == "tag_check_required" else "submit completed but no post id detected; site may require manual tag selection/edit before posting"
                     tag_state_code = "tag_error" if alert_type == "tag_check_required" else "failed"
                     
@@ -1132,7 +1146,7 @@ class SankakuAutomationClient:
         return None
 
     @staticmethod
-    def _detect_page_alerts(page) -> str:
+    def _detect_page_alerts(page) -> tuple[str, str]:
         try:
             text = page.evaluate(
                 """
@@ -1160,14 +1174,14 @@ class SankakuAutomationClient:
                 """
             )
         except Exception:
-            return ""
+            return "", ""
         if not isinstance(text, str) or not text.strip():
-            return ""
+            return "", ""
         lowered = text.lower()
         
         duplicate_terms = ("已存在", "合并到", "already exists", "merged", "has been merged", "作为编辑")
         if any(term in lowered for term in duplicate_terms):
-            return "duplicate"
+            return "duplicate", text
             
         tag_terms = ("tag", "tags", "标签", "標籤", "tagging")
         review_terms = ("check", "review", "edit", "modify", "change", "確認", "检查", "檢查", "修改", "更改", "确认")
@@ -1175,8 +1189,8 @@ class SankakuAutomationClient:
         if any(term in lowered for term in tag_terms) and (
             any(term in lowered for term in review_terms) or any(term in lowered for term in blocking_terms)
         ):
-            return "tag_check_required"
-        return ""
+            return "tag_check_required", text
+        return "unknown", text
 
     def _wait_for_uploaded_post(
         self,

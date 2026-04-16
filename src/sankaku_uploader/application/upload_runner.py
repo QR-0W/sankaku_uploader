@@ -163,6 +163,7 @@ def _run_upload_task(task_payload: dict[str, Any], settings_payload: dict[str, A
                 "post_id": result.post_id,
                 "uploaded_url": result.uploaded_url,
                 "error": result.error,
+                "is_duplicate": getattr(result, "is_duplicate", False),
             },
         )
 
