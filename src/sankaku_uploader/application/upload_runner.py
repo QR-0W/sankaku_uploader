@@ -78,6 +78,7 @@ def _run_upload_task(task_payload: dict[str, Any], settings_payload: dict[str, A
             browser_channel=settings.browser_channel,
             headless=settings.headless,
             run_mode="auto_submit",
+            debug_dir=Path(settings.profile_dir).parent / "debug",
         ),
         review_decision_provider=review_provider if needs_manual_review else None,
         trace_hook=trace,

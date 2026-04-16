@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from datetime import UTC, datetime
 import re
 import time
 from typing import Callable, Iterable, Literal, Protocol
@@ -83,10 +84,11 @@ class AutomationConfig:
     browser_channel: str = "msedge"
     headless: bool = False
     poll_interval_seconds: float = 0.5
-    ai_timeout_seconds: float = 20.0
+    ai_timeout_seconds: float = 45.0
     submit_timeout_seconds: float = 60.0
     confirmation_timeout_seconds: float = 1800.0
     run_mode: str = "manual_assist"  # manual_assist | auto_submit
+    debug_dir: Path | None = None
 
 
 @dataclass(slots=True)
@@ -225,6 +227,14 @@ def _extract_tag_candidates_from_buttons(page) -> list[str]:
         "manual",
         "auto",
         "open",
+        "创建帖子",
+        "上传",
+        "高级",
+        "关闭",
+        "重试",
+        "跳过",
+        "确认",
+        "提交",
     }
     candidates: list[str] = []
     for entry in raw:
@@ -232,8 +242,15 @@ def _extract_tag_candidates_from_buttons(page) -> list[str]:
         low = text.lower()
         if low in blocked:
             continue
-        if re.fullmatch(r"[A-Za-z0-9_:\-]{2,48}", text):
-            candidates.append(text)
+        if len(text) < 2 or len(text) > 64:
+            continue
+        if re.fullmatch(r"\d+", text):
+            continue
+        if any(x in low for x in ("http://", "https://")):
+            continue
+        if " " in text:
+            continue
+        candidates.append(text)
     return _normalize_tags(candidates)
 
 
@@ -297,6 +314,8 @@ class SankakuAutomationClient:
     def upload_items(self, items: list[UploadItem], *, diff_mode: bool = False) -> list[AutomationUploadResult]:
         results: list[AutomationUploadResult] = []
         self.config.profile_dir.mkdir(parents=True, exist_ok=True)
+        if self.config.debug_dir is not None:
+            self.config.debug_dir.mkdir(parents=True, exist_ok=True)
         self._trace(
             f"automation start: items={len(items)} diff_mode={diff_mode} headless={self.config.headless} "
             f"channel={self.config.browser_channel} profile_dir={self.config.profile_dir}"
@@ -375,6 +394,9 @@ class SankakuAutomationClient:
                 poll_interval_seconds=self.config.poll_interval_seconds,
             )
             self._trace(f"{item.file_name}: tag detect available={available} count={len(tags)} tags={tags[:8]}")
+            if not tags:
+                self._trace_tag_surface(page, item.file_name)
+                self._save_debug_artifact(page, item, reason="empty-tags")
 
             if self.config.run_mode == "manual_assist":
                 uploaded_url, post_id = self._wait_for_uploaded_post(
@@ -384,6 +406,7 @@ class SankakuAutomationClient:
                 )
                 if not post_id:
                     self._trace(f"{item.file_name}: manual assist timed out waiting post id, last_url={uploaded_url}")
+                    self._save_debug_artifact(page, item, reason="manual-timeout-no-post-id")
                     return AutomationUploadResult(
                         item_id=item.item_id,
                         success=False,
@@ -411,6 +434,7 @@ class SankakuAutomationClient:
             submit = self._wait_for_submit(page)
             if submit is None:
                 self._trace(f"{item.file_name}: submit button unavailable")
+                self._save_debug_artifact(page, item, reason="submit-unavailable")
                 return AutomationUploadResult(item_id=item.item_id, success=False, ai_tags=tags, tag_state="failed", error="submit button unavailable")
             submit.click()
             self._trace(f"{item.file_name}: submit clicked")
@@ -444,6 +468,7 @@ class SankakuAutomationClient:
                         )
                 if not post_id:
                     self._trace(f"{item.file_name}: failed to detect post_id after retry, last_url={uploaded_url}")
+                    self._save_debug_artifact(page, item, reason="submit-no-post-id")
                     return AutomationUploadResult(
                         item_id=item.item_id,
                         success=False,
@@ -463,6 +488,7 @@ class SankakuAutomationClient:
             )
         except Exception as exc:
             self._trace(f"{item.file_name}: exception during upload: {exc}")
+            self._save_debug_artifact(page, item, reason=f"exception-{type(exc).__name__}")
             return AutomationUploadResult(item_id=item.item_id, success=False, tag_state="failed", error=str(exc))
 
     def _wait_until_upload_surface_ready(self, page) -> tuple[bool, str]:
@@ -624,6 +650,54 @@ class SankakuAutomationClient:
             if post_id and post_id not in ignore_post_ids:
                 return url, post_id
         return "", ""
+
+    def _trace_tag_surface(self, page, file_name: str) -> None:
+        parts: list[str] = []
+        for selector in AI_TAG_SELECTORS:
+            count = 0
+            text = ""
+            try:
+                loc = page.locator(selector)
+                count = loc.count()
+                if count > 0:
+                    text = " ".join((loc.first.text_content() or "").split())[:120]
+            except Exception:
+                pass
+            parts.append(f"{selector}:count={count}:text={text!r}")
+        self._trace(f"{file_name}: tag surface snapshot => " + " | ".join(parts))
+
+        try:
+            btn_samples = page.evaluate(
+                """
+                () => Array.from(document.querySelectorAll("button"))
+                  .map((el) => String(el.textContent || "").replace(/\\s+/g, " ").trim())
+                  .filter(Boolean)
+                  .slice(0, 24)
+                """
+            )
+        except Exception:
+            btn_samples = []
+        if isinstance(btn_samples, list) and btn_samples:
+            self._trace(f"{file_name}: first button texts => {btn_samples}")
+
+    def _save_debug_artifact(self, page, item: UploadItem, *, reason: str) -> None:
+        if self.config.debug_dir is None:
+            return
+        try:
+            timestamp = datetime.now(tz=UTC).strftime("%Y%m%d-%H%M%S")
+            stem = f"{timestamp}-{item.item_id}-{reason}"
+            txt_path = self.config.debug_dir / f"{stem}.txt"
+            html_path = self.config.debug_dir / f"{stem}.html"
+            png_path = self.config.debug_dir / f"{stem}.png"
+            txt_path.write_text(
+                f"reason={reason}\nitem_id={item.item_id}\nfile={item.file_name}\nurl={self._safe_url(page)}\n",
+                encoding="utf-8",
+            )
+            html_path.write_text(page.content(), encoding="utf-8")
+            page.screenshot(path=str(png_path), full_page=True)
+            self._trace(f"{item.file_name}: debug artifact saved => {txt_path}")
+        except Exception:
+            return
 
     def _review_decision(self, item: UploadItem, tags: list[str], available: bool) -> TagDecision:
         if self.review_decision_provider is None:
