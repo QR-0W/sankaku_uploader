@@ -41,3 +41,16 @@ def test_retry_failed_items_switches_task_to_pending(tmp_path: Path) -> None:
     retried = service.retry_failed_items(task.task_id)
     assert retried == 1
     assert service.get_task(task.task_id).status is TaskStatus.PENDING
+
+
+def test_update_item_tags(tmp_path: Path) -> None:
+    repo = JsonRepository(base_dir=tmp_path)
+    service = TaskService(repo)
+    task = service.create_task("tags", TaskType.NORMAL_BATCH)
+    file = tmp_path / "a.png"
+    file.write_text("x", encoding="utf-8")
+    added = service.add_files(task.task_id, [file])
+
+    service.update_item_tags(task.task_id, added[0].item_id, ["1girl", "smile"])
+    loaded = service.get_task(task.task_id)
+    assert loaded.items[0].final_tags == ["1girl", "smile"]

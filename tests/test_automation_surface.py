@@ -54,6 +54,23 @@ class FakeContext:
         self.pages = pages
 
 
+class FakeResponse:
+    def __init__(self, *, url: str, status: int = 200, headers: dict | None = None, json_payload=None, text_payload: str = ""):
+        self.url = url
+        self.status = status
+        self.headers = headers or {}
+        self._json_payload = json_payload
+        self._text_payload = text_payload
+
+    def json(self):
+        if self._json_payload is None:
+            raise RuntimeError("no json")
+        return self._json_payload
+
+    def text(self):
+        return self._text_payload
+
+
 def _build_client() -> SankakuAutomationClient:
     return SankakuAutomationClient(
         AutomationConfig(
@@ -151,3 +168,23 @@ def test_wait_for_uploaded_post_ignores_known_ids() -> None:
     )
     assert post_id == ""
     assert "upload" in url
+
+
+def test_extract_post_ids_from_response_json_payload() -> None:
+    client = _build_client()
+    response = FakeResponse(
+        url="https://www.sankakucomplex.com/api/v1/posts",
+        headers={"content-type": "application/json"},
+        json_payload={"post": {"id": "xyz987"}},
+    )
+    assert client._extract_post_ids_from_response(response) == ["xyz987"]
+
+
+def test_extract_post_ids_from_response_text_payload() -> None:
+    client = _build_client()
+    response = FakeResponse(
+        url="https://www.sankakucomplex.com/api/v1/upload",
+        headers={"content-type": "text/plain"},
+        text_payload='{"post_id":"abc123"}',
+    )
+    assert client._extract_post_ids_from_response(response) == ["abc123"]

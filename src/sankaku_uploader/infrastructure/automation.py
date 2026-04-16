@@ -468,6 +468,19 @@ class SankakuAutomationClient:
         return results
 
     def _upload_one(self, page, context, item: UploadItem, *, parent_post_id: str, known_post_ids: set[str]) -> AutomationUploadResult:
+        response_post_ids: list[str] = []
+
+        def on_response(response) -> None:
+            ids = self._extract_post_ids_from_response(response)
+            for post_id in ids:
+                if post_id in known_post_ids:
+                    continue
+                if post_id in response_post_ids:
+                    continue
+                response_post_ids.append(post_id)
+                self._trace(f"{item.file_name}: post id captured from response={post_id}")
+
+        page.on("response", on_response)
         try:
             self._dismiss_common_overlays(page)
             selected_by = self._select_file(page, Path(item.file_path))
@@ -501,6 +514,10 @@ class SankakuAutomationClient:
                     context=context,
                     ignore_post_ids=known_post_ids,
                 )
+                if not post_id and response_post_ids:
+                    post_id = response_post_ids[-1]
+                    uploaded_url = self._build_post_url(post_id)
+                    self._trace(f"{item.file_name}: manual mode fallback to response post id={post_id}")
                 if not post_id:
                     self._trace(f"{item.file_name}: manual assist timed out waiting post id, last_url={uploaded_url}")
                     self._save_debug_artifact(page, item, reason="manual-timeout-no-post-id")
@@ -563,6 +580,10 @@ class SankakuAutomationClient:
                             timeout_seconds=15.0,
                             ignore_post_ids=known_post_ids,
                         )
+                if not post_id and response_post_ids:
+                    post_id = response_post_ids[-1]
+                    uploaded_url = self._build_post_url(post_id)
+                    self._trace(f"{item.file_name}: fallback to response-captured post id={post_id}")
                 if not post_id:
                     self._trace(f"{item.file_name}: failed to detect post_id after retry, last_url={uploaded_url}")
                     self._save_debug_artifact(page, item, reason="submit-no-post-id")
@@ -587,6 +608,8 @@ class SankakuAutomationClient:
             self._trace(f"{item.file_name}: exception during upload: {exc}")
             self._save_debug_artifact(page, item, reason=f"exception-{type(exc).__name__}")
             return AutomationUploadResult(item_id=item.item_id, success=False, tag_state="failed", error=str(exc))
+        finally:
+            self._detach_response_listener(page, on_response)
 
     def _wait_until_upload_surface_ready(self, page) -> tuple[bool, str]:
         deadline = time.monotonic() + self.config.submit_timeout_seconds
@@ -747,6 +770,114 @@ class SankakuAutomationClient:
             if post_id and post_id not in ignore_post_ids:
                 return url, post_id
         return "", ""
+
+    def _extract_post_ids_from_response(self, response) -> list[str]:
+        try:
+            status = int(response.status)
+            if status >= 400:
+                return []
+        except Exception:
+            pass
+
+        candidates: list[str] = []
+        try:
+            response_url = str(response.url)
+        except Exception:
+            response_url = ""
+        if response_url:
+            url_post_id = extract_post_id(response_url)
+            if url_post_id:
+                candidates.append(url_post_id)
+
+        payload_text = ""
+        try:
+            content_type = str((response.headers or {}).get("content-type", "")).lower()
+        except Exception:
+            content_type = ""
+
+        if "json" in content_type:
+            try:
+                data = response.json()
+                candidates.extend(self._extract_post_ids_from_payload(data))
+            except Exception:
+                pass
+
+        if not candidates:
+            try:
+                payload_text = response.text()
+            except Exception:
+                payload_text = ""
+            if payload_text:
+                candidates.extend(re.findall(r"/posts/([A-Za-z0-9_-]+)", payload_text))
+                candidates.extend(
+                    re.findall(r'"post(?:_id|Id)?"\s*:\s*"([A-Za-z0-9_-]+)"', payload_text, flags=re.I)
+                )
+
+        return self._normalize_post_ids(candidates)
+
+    def _extract_post_ids_from_payload(self, payload) -> list[str]:
+        found: list[str] = []
+
+        def walk(node, parent_key: str = "") -> None:
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    key_str = str(key).lower()
+                    if key_str in {"post_id", "postid"} and isinstance(value, (str, int)):
+                        found.append(str(value))
+                    if key_str == "id" and parent_key in {"post", "created_post", "upload", "result"} and isinstance(
+                        value, (str, int)
+                    ):
+                        found.append(str(value))
+                    if key_str == "post" and isinstance(value, dict):
+                        inner_id = value.get("id") or value.get("post_id")
+                        if isinstance(inner_id, (str, int)):
+                            found.append(str(inner_id))
+                    walk(value, key_str)
+            elif isinstance(node, list):
+                for child in node:
+                    walk(child, parent_key)
+
+        walk(payload)
+        return found
+
+    @staticmethod
+    def _normalize_post_ids(values: Iterable[str]) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            post_id = str(value).strip()
+            if not post_id:
+                continue
+            if post_id.lower() in {"upload", "create"}:
+                continue
+            if not re.fullmatch(r"[A-Za-z0-9_-]{3,64}", post_id):
+                continue
+            if post_id in seen:
+                continue
+            seen.add(post_id)
+            normalized.append(post_id)
+        return normalized
+
+    def _build_post_url(self, post_id: str) -> str:
+        try:
+            match = re.match(r"^(https?://[^/]+)", self.config.upload_url)
+            base = match.group(1) if match else "https://www.sankakucomplex.com"
+        except Exception:
+            base = "https://www.sankakucomplex.com"
+        return f"{base}/posts/{post_id}"
+
+    @staticmethod
+    def _detach_response_listener(page, handler) -> None:
+        for method_name in ("remove_listener", "off"):
+            try:
+                method = getattr(page, method_name)
+            except Exception:
+                continue
+            try:
+                method("response", handler)
+                return
+            except Exception:
+                continue
 
     def _trace_tag_surface(self, page, file_name: str) -> None:
         parts: list[str] = []

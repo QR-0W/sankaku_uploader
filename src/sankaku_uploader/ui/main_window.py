@@ -256,6 +256,21 @@ class MainWindow(QMainWindow):
         self.detail.setReadOnly(True)
         right_layout.addWidget(self.detail, 1)
 
+        right_layout.addWidget(QLabel("手动标签编辑（每行或逗号分隔）"))
+        self.tag_editor = QPlainTextEdit()
+        self.tag_editor.setPlaceholderText("例如：\n1girl\nsmile\noutdoors")
+        self.tag_editor.setMaximumHeight(140)
+        right_layout.addWidget(self.tag_editor)
+
+        tag_btn_row = QHBoxLayout()
+        self.apply_tags_button = QPushButton("应用标签")
+        self.reset_tags_button = QPushButton("还原检测标签")
+        self.apply_tags_button.clicked.connect(self._apply_manual_tags)
+        self.reset_tags_button.clicked.connect(self._reset_tags_from_detected)
+        tag_btn_row.addWidget(self.apply_tags_button)
+        tag_btn_row.addWidget(self.reset_tags_button)
+        right_layout.addLayout(tag_btn_row)
+
         review_row = QHBoxLayout()
         self.confirm_review_button = QPushButton("确认提交")
         self.skip_review_button = QPushButton("跳过")
@@ -439,6 +454,7 @@ class MainWindow(QMainWindow):
 
     def _show_item_detail(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:
         self.detail.clear()
+        self.tag_editor.clear()
         if current is None:
             return
         task = self._active_task()
@@ -459,7 +475,58 @@ class MainWindow(QMainWindow):
                 f"error: {item.error_message}",
             ]
             self.detail.setPlainText("\n".join(lines))
+            tag_source = item.final_tags or item.detected_tags
+            if tag_source:
+                self.tag_editor.setPlainText("\n".join(tag_source))
             return
+
+    def _selected_item_context(self):
+        task = self._active_task()
+        current = self.queue_list.currentItem()
+        if task is None or current is None:
+            return None, None
+        item_id = str(current.data(Qt.ItemDataRole.UserRole))
+        for item in task.items:
+            if item.item_id == item_id:
+                return task, item
+        return task, None
+
+    def _apply_manual_tags(self) -> None:
+        task, item = self._selected_item_context()
+        if task is None or item is None:
+            return
+        raw = self.tag_editor.toPlainText().strip()
+        if not raw:
+            tags: list[str] = []
+        else:
+            tags = self._parse_manual_tags(raw)
+        self.service.update_item_tags(task.task_id, item.item_id, tags)
+        self._append_log(f"已更新标签：{item.file_name} ({len(tags)} tags)")
+        self._render_active_task()
+
+    def _reset_tags_from_detected(self) -> None:
+        task, item = self._selected_item_context()
+        if task is None or item is None:
+            return
+        self.service.update_item_tags(task.task_id, item.item_id, list(item.detected_tags))
+        self.tag_editor.setPlainText("\n".join(item.detected_tags))
+        self._append_log(f"已还原检测标签：{item.file_name}")
+        self._render_active_task()
+
+    @staticmethod
+    def _parse_manual_tags(raw: str) -> list[str]:
+        import re
+
+        tokens = [part.strip() for part in re.split(r"[\n,]+", raw) if part.strip()]
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for tag in tokens:
+            key = tag.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(tag)
+        return deduped
 
     def _start_task(self) -> None:
         task = self._active_task()

@@ -98,6 +98,14 @@ class TaskService:
         task.touch()
         self._save()
 
+    def update_item_tags(self, task_id: str, item_id: str, final_tags: list[str]) -> None:
+        task = self.get_task(task_id)
+        item = self._get_item(task, item_id)
+        item.final_tags = list(final_tags)
+        item.touch()
+        task.touch()
+        self._save()
+
     @staticmethod
     def _get_item(task: UploadTask, item_id: str) -> UploadItem:
         for item in task.items:
