@@ -611,12 +611,17 @@ class MainWindow(QMainWindow):
             if task is not None and item is not None:
                 edited_tags = self._parse_manual_tags(self.tag_editor.toPlainText())
                 current_tags, _ = self._effective_item_tags(item)
+                force_override = bool(item.final_tags_locked)
                 if edited_tags != current_tags:
                     tags_override = edited_tags
                     tags_override_allow_empty = self.tag_editor.toPlainText().strip() == ""
                     self.service.update_item_tags(task.task_id, item.item_id, edited_tags)
                     self._render_active_task()
                     self._append_log(f"确认前应用本地标签编辑：{item.file_name} ({len(edited_tags)} tags)")
+                elif force_override:
+                    tags_override = edited_tags
+                    tags_override_allow_empty = self.tag_editor.toPlainText().strip() == ""
+                    self._append_log(f"确认前强制应用本地标签：{item.file_name} ({len(edited_tags)} tags)")
 
         self.runner.send_decision(
             self.pending_review_item_id,
