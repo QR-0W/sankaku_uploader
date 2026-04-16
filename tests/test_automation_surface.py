@@ -1,4 +1,4 @@
-﻿from pathlib import Path
+from pathlib import Path
 from types import SimpleNamespace
 
 from sankaku_uploader.infrastructure.automation import (
@@ -368,15 +368,15 @@ def test_close_extra_pages_closes_all_but_kept_page() -> None:
 
 
 def test_detect_tag_check_required_from_alert_text() -> None:
-    page = FakePage({}, evaluate_result="需要检查标签后才能创建帖子")
+    page = FakePage({}, evaluate_result="需要检查标签")
     client = _build_client()
-    assert "检查标签" in client._detect_tag_check_required(page)
+    assert "tag_check_required" in client._detect_page_alerts(page)
 
 
 def test_detect_tag_check_required_ignores_unrelated_text() -> None:
-    page = FakePage({}, evaluate_result="上传完成，正在处理图片")
+    page = FakePage({}, evaluate_result="上传完成，没有图片")
     client = _build_client()
-    assert client._detect_tag_check_required(page) == ""
+    assert client._detect_page_alerts(page) == ""
 
 
 def test_upload_items_uses_concurrent_path_for_normal_batches(monkeypatch) -> None:

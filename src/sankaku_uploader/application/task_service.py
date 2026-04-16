@@ -9,7 +9,27 @@ from sankaku_uploader.infrastructure.storage import JsonRepository
 class TaskService:
     def __init__(self, repository: JsonRepository) -> None:
         self.repository = repository
-        self.tasks: list[UploadTask] = self.repository.load_tasks()
+        loaded_tasks = self.repository.load_tasks()
+        
+        normal_task = next((t for t in loaded_tasks if t.task_type == TaskType.NORMAL_BATCH), None)
+        diff_task = next((t for t in loaded_tasks if t.task_type == TaskType.DIFF_GROUP), None)
+        
+        if normal_task is None:
+            normal_task = UploadTask(task_name="普通模式队列", task_type=TaskType.NORMAL_BATCH)
+        if diff_task is None:
+            diff_task = UploadTask(task_name="差分模式队列", task_type=TaskType.DIFF_GROUP)
+            
+        for t in loaded_tasks:
+            if t is not normal_task and t.task_type == TaskType.NORMAL_BATCH:
+                normal_task.items.extend(t.items)
+            elif t is not diff_task and t.task_type == TaskType.DIFF_GROUP:
+                diff_task.items.extend(t.items)
+                
+        normal_task._normalize_indexes()
+        diff_task._normalize_indexes()
+
+        self.tasks: list[UploadTask] = [normal_task, diff_task]
+        self._save()
 
     def list_tasks(self) -> list[UploadTask]:
         return list(self.tasks)
@@ -21,14 +41,10 @@ class TaskService:
         raise KeyError(f"task not found: {task_id}")
 
     def create_task(self, name: str, task_type: TaskType) -> UploadTask:
-        task = UploadTask(task_name=name.strip() or "Untitled Task", task_type=task_type)
-        self.tasks.insert(0, task)
-        self._save()
-        return task
+        raise NotImplementedError("Single queue per mode enfored, creating dynamic tasks is disabled.")
 
     def delete_task(self, task_id: str) -> None:
-        self.tasks = [task for task in self.tasks if task.task_id != task_id]
-        self._save()
+        raise NotImplementedError("Single queue per mode enforced, deleting core tasks is disabled.")
 
     def add_files(self, task_id: str, paths: list[Path]) -> list[UploadItem]:
         task = self.get_task(task_id)
@@ -44,79 +60,75 @@ class TaskService:
 
     def remove_item(self, task_id: str, item_id: str) -> None:
         task = self.get_task(task_id)
-        task.remove_item(item_id)
+        task.remove(item_id)
         self._save()
 
     def clear_items(self, task_id: str) -> None:
         task = self.get_task(task_id)
         task.items.clear()
         task.root_post_id = ""
-        task.touch()
         self._save()
 
-    def retry_failed_items(self, task_id: str) -> int:
+    def set_task_status(self, task_id: str, status: TaskStatus, force: bool = False) -> None:
         task = self.get_task(task_id)
-        retried = task.retry_failed_items()
-        if retried > 0 and task.status in {TaskStatus.FAILED, TaskStatus.PARTIAL_FAILED}:
-            task.set_status(TaskStatus.PENDING)
-        self._save()
-        return retried
-
-    def set_task_status(self, task_id: str, target: TaskStatus, *, force: bool = False) -> None:
-        task = self.get_task(task_id)
-        if force or task.status == target:
-            task.set_status(target)
-            self._save()
-            return
-        if not can_transition_task(task.status, target):
-            raise ValueError(f"invalid task transition: {task.status.value} -> {target.value}")
-        task.set_status(target)
+        if not force and not can_transition_task(task.status, status):
+            raise ValueError(f"invalid task transition: {task.status.value} -> {status.value}")
+        task.set_status(status)
         self._save()
 
     def update_item_result(
         self,
         task_id: str,
         item_id: str,
-        *,
-        status: ItemStatus,
+        status: ItemStatus | None = None,
+        post_id: str | None = None,
+        error: str | None = None,
         detected_tags: list[str] | None = None,
         final_tags: list[str] | None = None,
-        post_id: str = "",
-        error: str = "",
     ) -> None:
         task = self.get_task(task_id)
-        item = self._get_item(task, item_id)
-        item.set_status(status, error=error)
-        if detected_tags is not None:
-            item.detected_tags = list(detected_tags)
-        if final_tags is not None:
-            item.final_tags = list(final_tags)
-            item.final_tags_locked = False
-        if post_id:
-            item.created_post_id = post_id
-            if task.task_type is TaskType.DIFF_GROUP and item.order_index == 0:
-                task.set_root_post_id(post_id)
-        task.touch()
+        for item in task.items:
+            if item.item_id != item_id:
+                continue
+            if status is not None:
+                item.set_status(status)
+            if post_id is not None:
+                item.created_post_id = post_id
+                if task.task_type == TaskType.DIFF_GROUP and item.order_index == 0:
+                    task.set_root_post_id(post_id)
+            if error is not None:
+                item.error_message = error
+            if detected_tags is not None:
+                item.detected_tags = list(detected_tags)
+            if final_tags is not None:
+                item.final_tags = list(final_tags)
+            break
         self._save()
 
-    def update_item_tags(self, task_id: str, item_id: str, final_tags: list[str]) -> None:
+    def update_item_tags(self, task_id: str, item_id: str, tags: list[str]) -> None:
         task = self.get_task(task_id)
-        item = self._get_item(task, item_id)
-        item.final_tags = list(final_tags)
-        item.final_tags_locked = True
-        item.touch()
-        task.touch()
-        self._save()
-
-    @staticmethod
-    def _get_item(task: UploadTask, item_id: str) -> UploadItem:
         for item in task.items:
             if item.item_id == item_id:
-                return item
-        raise KeyError(f"item not found: {item_id}")
+                item.final_tags = list(tags)
+                item.final_tags_locked = True
+                self._save()
+                return
 
-    def _save(self) -> None:
-        self.repository.save_tasks(self.tasks)
+    def retry_failed_items(self, task_id: str) -> int:
+        task = self.get_task(task_id)
+        count = 0
+        for item in task.items:
+            if item.status in (ItemStatus.FAILED, ItemStatus.TAG_ERROR, ItemStatus.DUPLICATE):
+                item.set_status(ItemStatus.PENDING)
+                item.error_message = ""
+                count += 1
+        if count > 0:
+            task.set_status(TaskStatus.PENDING)
+            self._save()
+        return count
 
     def persist(self) -> None:
         self._save()
+
+    def _save(self) -> None:
+        self.repository.save_tasks(self.tasks)

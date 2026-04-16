@@ -25,6 +25,8 @@ class ItemStatus(str, Enum):
     SUBMITTING = "submitting"
     SUCCESS = "success"
     FAILED = "failed"
+    TAG_ERROR = "tag_error"
+    DUPLICATE = "duplicate"
 
 
 class FileType(str, Enum):

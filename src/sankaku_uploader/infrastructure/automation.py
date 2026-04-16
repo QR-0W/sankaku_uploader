@@ -119,6 +119,7 @@ class PreparedUpload:
     response_post_ids: list[str] = field(default_factory=list)
     response_handler: object | None = None
     error: str = ""
+    prepare_time: float = 0.0  # monotonic timestamp when file was selected
 
 
 class LocatorLike(Protocol):
@@ -450,6 +451,8 @@ class SankakuAutomationClient:
             launch_kwargs = {
                 "user_data_dir": str(self.config.profile_dir),
                 "headless": self.config.headless,
+                "locale": "en-US",
+                "args": ["--lang=en-US", "--accept-lang=en-US"],
             }
             if self.config.browser_channel:
                 launch_kwargs["channel"] = self.config.browser_channel
@@ -542,6 +545,10 @@ class SankakuAutomationClient:
             for prepared_upload in prepared:
                 if prepared_upload.error:
                     continue
+                # Refresh known_post_ids right before each submit so that
+                # post IDs created by earlier submissions in this chunk are
+                # excluded from the detection of the current item's post ID.
+                prepared_upload.known_post_ids = self._collect_known_post_ids(context)
                 result = self._review_and_submit_prepared(prepared_upload, context)
                 results.append(result)
                 self._detach_prepared_upload(prepared_upload)
@@ -575,6 +582,10 @@ class SankakuAutomationClient:
                 self._trace(f"{item.file_name}: file selection failed")
                 return prepared
             self._trace(f"{item.file_name}: file selected via {selected_by}")
+            # Give the SPA time to register the file and start the AI tagging
+            # pipeline before we begin polling for tags.
+            time.sleep(1.0)
+            prepared.prepare_time = time.monotonic()
         except Exception as exc:
             prepared.error = str(exc)
             self._trace(f"{item.file_name}: prepare exception: {exc}")
@@ -582,7 +593,29 @@ class SankakuAutomationClient:
 
     def _wait_for_prepared_tags(self, prepared_uploads: list[PreparedUpload]) -> None:
         pending = [item for item in prepared_uploads if not item.error]
+        
+        # Wake up background tabs to prevent Chromium from throttling AI tag requests
+        if len(pending) > 1:
+            for prepared in pending:
+                try:
+                    prepared.page.bring_to_front()
+                except Exception:
+                    pass
+            # Restore the first page back to front
+            try:
+                pending[0].page.bring_to_front()
+            except Exception:
+                pass
+
         deadline = time.monotonic() + self.config.ai_timeout_seconds + max(self.config.ai_timeout_seconds * 2.0, 60.0)
+        # Per-item grace period: do not give up on a page until at least this
+        # many seconds have elapsed since file selection (prepare_time).  The
+        # SPA may need a few seconds to even *start* the AI tagging pipeline,
+        # during which _extract_tags_from_editor_section returns
+        # in_progress=False, tags=[] — which previously caused the page to be
+        # prematurely abandoned.
+        grace_seconds = 45.0
+
         while pending and time.monotonic() < deadline:
             still_pending: list[PreparedUpload] = []
             for prepared in pending:
@@ -596,13 +629,25 @@ class SankakuAutomationClient:
                         f"still_tagging={still_tagging} tags={tags[:8]}"
                     )
                     continue
-                if still_tagging:
+
+                # Determine whether this page is still within its grace period.
+                item_grace_remaining = (
+                    (prepared.prepare_time + grace_seconds) - time.monotonic()
+                    if prepared.prepare_time > 0
+                    else 0.0
+                )
+                within_grace = item_grace_remaining > 0
+
+                if still_tagging or within_grace:
+                    # Either the SPA is actively tagging, or we haven't waited
+                    # long enough for it to start — keep polling.
                     still_pending.append(prepared)
                 else:
                     prepared.tags = []
                     prepared.available = False
                     self._trace(
-                        f"{prepared.item.file_name}: tag detect available=False count=0 still_tagging=False tags=[]"
+                        f"{prepared.item.file_name}: tag detect available=False count=0 "
+                        f"still_tagging=False within_grace=False tags=[]"
                     )
             pending = still_pending
             if pending:
@@ -778,10 +823,20 @@ class SankakuAutomationClient:
                 ignore_post_ids=known_post_ids,
             )
             if not post_id:
-                tag_check_message = self._detect_tag_check_required(page)
-                if tag_check_message and attempt < 3:
+                alert_type = self._detect_page_alerts(page)
+                if alert_type == "duplicate":
+                    self._trace(f"{item.file_name}: Sankaku reported file already exists (duplicate)")
+                    return AutomationUploadResult(
+                        item_id=item.item_id,
+                        success=False,
+                        ai_tags=tags,
+                        tag_state="duplicate",
+                        error="duplicate_post",
+                    )
+                
+                if alert_type == "tag_check_required" and attempt < 3:
                     self._trace(
-                        f"{item.file_name}: Sankaku requires tag review before submit: {tag_check_message}"
+                        f"{item.file_name}: Sankaku requires tag review before submit (attempt {attempt+1})"
                     )
                     # Keep the page alive and return to review state instead of treating this as an upload failure.
                     return self._review_and_submit(
@@ -816,15 +871,19 @@ class SankakuAutomationClient:
                     uploaded_url = self._build_post_url(post_id)
                     self._trace(f"{item.file_name}: fallback to response-captured post id={post_id}")
                 if not post_id:
-                    self._trace(f"{item.file_name}: failed to detect post_id after retry, last_url={uploaded_url}")
+                    alert_type = self._detect_page_alerts(page)
+                    error_code = "tag_check_required" if alert_type == "tag_check_required" else "submit completed but no post id detected; site may require manual tag selection/edit before posting"
+                    tag_state_code = "tag_error" if alert_type == "tag_check_required" else "failed"
+                    
+                    self._trace(f"{item.file_name}: failed to detect post_id after retry, last_url={uploaded_url}. alert_type={alert_type}")
                     self._save_debug_artifact(page, item, reason="submit-no-post-id")
                     return AutomationUploadResult(
                         item_id=item.item_id,
                         success=False,
                         ai_tags=tags,
-                        tag_state="failed",
+                        tag_state=tag_state_code,
                         uploaded_url=uploaded_url,
-                        error="submit completed but no post id detected; site may require manual tag selection/edit before posting",
+                        error=error_code,
                     )
             self._trace(f"{item.file_name}: upload success post_id={post_id} url={uploaded_url}")
             return AutomationUploadResult(
@@ -940,7 +999,7 @@ class SankakuAutomationClient:
         return None
 
     @staticmethod
-    def _detect_tag_check_required(page) -> str:
+    def _detect_page_alerts(page) -> str:
         try:
             text = page.evaluate(
                 """
@@ -972,13 +1031,18 @@ class SankakuAutomationClient:
         if not isinstance(text, str) or not text.strip():
             return ""
         lowered = text.lower()
+        
+        duplicate_terms = ("已存在", "合并到", "already exists", "merged", "has been merged", "作为编辑")
+        if any(term in lowered for term in duplicate_terms):
+            return "duplicate"
+            
         tag_terms = ("tag", "tags", "标签", "標籤", "tagging")
         review_terms = ("check", "review", "edit", "modify", "change", "確認", "检查", "檢查", "修改", "更改", "确认")
         blocking_terms = ("required", "must", "need", "需要", "必须", "必須", "无法", "不能", "can't", "cannot")
         if any(term in lowered for term in tag_terms) and (
             any(term in lowered for term in review_terms) or any(term in lowered for term in blocking_terms)
         ):
-            return " ".join(text.split())[:300]
+            return "tag_check_required"
         return ""
 
     def _wait_for_uploaded_post(

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from pathlib import Path
 from typing import Iterable
@@ -217,16 +217,7 @@ class MainWindow(QMainWindow):
         self.task_list.currentItemChanged.connect(self._on_task_selected)
         left_layout.addWidget(self.task_list, 1)
 
-        self.new_task_type_combo = QComboBox()
-        self.new_task_type_combo.addItem("普通批量", TaskType.NORMAL_BATCH.value)
-        self.new_task_type_combo.addItem("差分组", TaskType.DIFF_GROUP.value)
-        self.new_task_button = QPushButton("新建任务")
-        self.delete_task_button = QPushButton("删除任务")
-        self.new_task_button.clicked.connect(self._create_task)
-        self.delete_task_button.clicked.connect(self._delete_task)
-        left_layout.addWidget(self.new_task_type_combo)
-        left_layout.addWidget(self.new_task_button)
-        left_layout.addWidget(self.delete_task_button)
+        left_layout.addWidget(self.task_list, 1)
         splitter.addWidget(left)
 
         center = QWidget()
@@ -363,27 +354,10 @@ class MainWindow(QMainWindow):
             self.task_list.setCurrentRow(0)
 
     def _create_task(self) -> None:
-        name, ok = QInputDialog.getText(self, "新建任务", "任务名称")
-        if not ok:
-            return
-        task_type = TaskType(str(self.new_task_type_combo.currentData()))
-        task = self.service.create_task(name, task_type)
-        self.active_task_id = task.task_id
-        self._refresh_task_list()
-        self._render_active_task()
-        self._append_log(f"创建任务：{task.task_name}")
+        pass
 
     def _delete_task(self) -> None:
-        task = self._active_task()
-        if task is None:
-            return
-        if QMessageBox.question(self, "确认", f"删除任务 {task.task_name} ?") != QMessageBox.StandardButton.Yes:
-            return
-        self.service.delete_task(task.task_id)
-        self.active_task_id = None
-        self.queue_list.clear()
-        self.detail.clear()
-        self._refresh_task_list()
+        pass
 
     def _on_task_selected(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:
         if current is None:
@@ -789,6 +763,13 @@ class MainWindow(QMainWindow):
         error = str(payload.get("error") or "")
 
         status = ItemStatus.SUCCESS if success else ItemStatus.FAILED
+        if not success:
+            tag_state = str(payload.get("tag_state") or "")
+            if tag_state == "tag_error":
+                status = ItemStatus.TAG_ERROR
+            elif tag_state == "duplicate":
+                status = ItemStatus.DUPLICATE
+                
         if success:
             self.pending_review_item_ids.discard(item_id)
             if self.pending_review_item_id == item_id:

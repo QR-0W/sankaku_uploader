@@ -15,7 +15,7 @@ def test_render_active_task_preserves_selection(tmp_path: Path) -> None:
     QApplication.instance() or QApplication([])
     window = MainWindow()
     window.repository.base_dir = tmp_path
-    task = window.service.create_task("focus", TaskType.NORMAL_BATCH)
+    task = next(t for t in window.service.list_tasks() if t.task_type == TaskType.NORMAL_BATCH)
 
     paths = []
     for name in ["a.png", "b.png"]:
