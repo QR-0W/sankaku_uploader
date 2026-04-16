@@ -383,8 +383,15 @@ class MainWindow(QMainWindow):
 
     def _render_active_task(self) -> None:
         task = self._active_task()
+        current_item = self.queue_list.currentItem()
+        current_item_id = None
+        if current_item is not None:
+            current_item_id = str(current_item.data(Qt.ItemDataRole.UserRole))
+        had_focus = self.queue_list.hasFocus()
+        blocker = QSignalBlocker(self.queue_list)
         self.queue_list.clear()
         if task is None:
+            del blocker
             return
 
         for item in sorted(task.items, key=lambda x: x.order_index):
@@ -392,6 +399,23 @@ class MainWindow(QMainWindow):
             list_item = QListWidgetItem(row_text)
             list_item.setData(Qt.ItemDataRole.UserRole, item.item_id)
             self.queue_list.addItem(list_item)
+            if item.item_id == current_item_id:
+                self.queue_list.setCurrentItem(list_item)
+
+        del blocker
+        if current_item_id is not None:
+            self._restore_queue_focus(current_item_id, had_focus)
+
+    def _restore_queue_focus(self, item_id: str, had_focus: bool) -> None:
+        for row in range(self.queue_list.count()):
+            item = self.queue_list.item(row)
+            if str(item.data(Qt.ItemDataRole.UserRole)) != item_id:
+                continue
+            self.queue_list.setCurrentItem(item)
+            self.queue_list.scrollToItem(item, QListWidget.ScrollHint.PositionAtCenter)
+            if had_focus:
+                self.queue_list.setFocus(Qt.FocusReason.OtherFocusReason)
+            break
 
     def _build_item_row_text(self, task: UploadTask, item) -> str:
         if task.task_type is TaskType.DIFF_GROUP:
