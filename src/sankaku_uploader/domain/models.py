@@ -301,6 +301,7 @@ class Settings:
     browser_channel: str = "msedge"
     profile_dir: str = str(Path.home() / ".sankaku-uploader" / "profile")
     headless: bool = True
+    max_concurrent_pages: int = 8
     ui_preferences: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -314,6 +315,7 @@ class Settings:
             "browser_channel": self.browser_channel,
             "profile_dir": self.profile_dir,
             "headless": self.headless,
+            "max_concurrent_pages": self.max_concurrent_pages,
             "ui_preferences": self.ui_preferences,
         }
 
@@ -329,5 +331,6 @@ class Settings:
             browser_channel=str(data.get("browser_channel") or "msedge"),
             profile_dir=str(data.get("profile_dir") or str(Path.home() / ".sankaku-uploader" / "profile")),
             headless=bool(data.get("headless", True)),
+            max_concurrent_pages=max(int(data.get("max_concurrent_pages", 8)), 1),
             ui_preferences=dict(data.get("ui_preferences") or {}),
         )

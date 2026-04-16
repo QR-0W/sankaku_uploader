@@ -37,6 +37,7 @@ def _run_upload_task(task_payload: dict[str, Any], settings_payload: dict[str, A
         emit("log", {"message": message})
 
     review_state: dict[str, dict[str, Any]] = {}
+    command_backlog: list[WorkerEvent] = []
 
     def review_provider(item, tags, available):
         state = review_state.setdefault(item.item_id, {"initialized": False, "last_tags": None, "last_available": None})
@@ -69,15 +70,20 @@ def _run_upload_task(task_payload: dict[str, Any], settings_payload: dict[str, A
         state["last_tags"] = tag_list
         state["last_available"] = available
 
+        commands_to_scan = list(command_backlog)
+        command_backlog.clear()
         while True:
             try:
                 raw = cmd_queue.get_nowait()
             except Empty:
-                return None
+                break
             except Exception:
-                return None
-            command = WorkerEvent.from_json(raw)
+                break
+            commands_to_scan.append(WorkerEvent.from_json(raw))
+
+        for command in commands_to_scan:
             if command.payload.get("item_id") != item.item_id:
+                command_backlog.append(command)
                 continue
             if command.kind == "tag_sync":
                 payload_tags = command.payload.get("tags")
@@ -115,6 +121,7 @@ def _run_upload_task(task_payload: dict[str, Any], settings_payload: dict[str, A
             headless=settings.headless,
             run_mode="auto_submit",
             debug_dir=Path(settings.profile_dir).parent / "debug",
+            max_concurrent_pages=settings.max_concurrent_pages,
         ),
         review_decision_provider=review_provider if needs_manual_review else None,
         trace_hook=trace,

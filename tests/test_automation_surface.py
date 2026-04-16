@@ -38,6 +38,9 @@ class FakeLocator:
     def press(self, key: str):
         self.page.presses.append((self.selector, key))
 
+    def set_input_files(self, value: str):
+        self.page.fills.append((self.selector, value))
+
 
 class FakePage:
     def __init__(self, counts: dict[str, int], url: str = "https://example.com/upload", evaluate_result=None):
@@ -168,6 +171,13 @@ def test_try_apply_minimum_tag_uses_autocomplete(monkeypatch) -> None:
     assert ok is True
     assert ("#autocomplete", "multiple_views") in page.fills
     assert ("#autocomplete", "Enter") in page.presses
+
+
+def test_select_file_prefers_direct_input_for_parallel_pages() -> None:
+    page = FakePage({"input[type='file']": 1, "button": 1})
+    client = _build_client()
+    selected_by = client._select_file(page, Path("a.png"))
+    assert selected_by == "input_file"
 
 
 def test_wait_for_uploaded_post_reads_new_tab_post_url() -> None:

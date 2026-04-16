@@ -189,6 +189,8 @@ class MainWindow(QMainWindow):
         self.upload_url_edit = QLineEdit()
         self.profile_dir_edit = QLineEdit()
         self.browser_channel_edit = QLineEdit()
+        self.max_concurrent_pages_edit = QLineEdit()
+        self.max_concurrent_pages_edit.setPlaceholderText("8")
         self.review_mode_combo = QComboBox()
         self.review_mode_combo.addItem("人工审核", ReviewMode.MANUAL_REVIEW.value)
         self.review_mode_combo.addItem("快速通过", ReviewMode.QUICK_PASS.value)
@@ -197,6 +199,7 @@ class MainWindow(QMainWindow):
         form.addRow("上传页 URL", self.upload_url_edit)
         form.addRow("浏览器 Profile", self.profile_dir_edit)
         form.addRow("浏览器通道", self.browser_channel_edit)
+        form.addRow("并发预取页数", self.max_concurrent_pages_edit)
         form.addRow("标签审核模式", self.review_mode_combo)
         form.addRow("运行方式", self.headless_check)
 
@@ -320,6 +323,7 @@ class MainWindow(QMainWindow):
         self.upload_url_edit.setText(self.settings.upload_page_url)
         self.profile_dir_edit.setText(self.settings.profile_dir)
         self.browser_channel_edit.setText(self.settings.browser_channel)
+        self.max_concurrent_pages_edit.setText(str(self.settings.max_concurrent_pages))
         self.headless_check.setChecked(self.settings.headless)
         for i in range(self.review_mode_combo.count()):
             if self.review_mode_combo.itemData(i) == self.settings.review_mode.value:
@@ -330,6 +334,11 @@ class MainWindow(QMainWindow):
         self.settings.upload_page_url = self.upload_url_edit.text().strip() or self.settings.upload_page_url
         self.settings.profile_dir = self.profile_dir_edit.text().strip() or self.settings.profile_dir
         self.settings.browser_channel = self.browser_channel_edit.text().strip() or self.settings.browser_channel
+        try:
+            self.settings.max_concurrent_pages = max(int(self.max_concurrent_pages_edit.text().strip() or "8"), 1)
+        except ValueError:
+            self.settings.max_concurrent_pages = 8
+            self.max_concurrent_pages_edit.setText("8")
         self.settings.review_mode = ReviewMode(str(self.review_mode_combo.currentData()))
         self.settings.headless = self.headless_check.isChecked()
         self.repository.save_settings(self.settings)

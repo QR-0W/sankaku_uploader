@@ -95,7 +95,7 @@ class AutomationConfig:
     confirmation_timeout_seconds: float = 1800.0
     run_mode: str = "manual_assist"  # manual_assist | auto_submit
     debug_dir: Path | None = None
-    max_concurrent_pages: int = 3
+    max_concurrent_pages: int = 8
 
 
 @dataclass(slots=True)
@@ -907,6 +907,11 @@ class SankakuAutomationClient:
         return count
 
     def _select_file(self, page, file_path: Path) -> str:
+        file_input = find_first_locator(page, FILE_INPUT_SELECTORS)
+        if file_input is not None:
+            file_input.set_input_files(str(file_path))
+            return "input_file"
+
         upload_button = find_button_by_text(page, ("上传文件", "Upload file", "Choose file", "选择文件"))
         if upload_button is not None:
             try:
@@ -917,10 +922,6 @@ class SankakuAutomationClient:
             except Exception:
                 pass
 
-        file_input = find_first_locator(page, FILE_INPUT_SELECTORS)
-        if file_input is not None:
-            file_input.set_input_files(str(file_path))
-            return "input_file"
         return ""
 
     def _wait_for_submit(self, page):

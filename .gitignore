@@ -10,6 +10,7 @@ __pycache__/
 dist/
 build/
 .mypy_cache/
+.omx/
 flow_record.py
 *flow_record*.py
 *_record.py
