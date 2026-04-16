@@ -152,11 +152,19 @@ def _run_upload_task(task_payload: dict[str, Any], settings_payload: dict[str, A
         nonlocal has_failures
         if not result.success:
             has_failures = True
+            
+        item_name = "(unknown)"
+        for it in task.items:
+            if it.item_id == result.item_id:
+                item_name = it.file_name
+                break
+
         emit(
             "item_result",
             {
                 "task_id": task.task_id,
                 "item_id": result.item_id,
+                "file_name": item_name,
                 "success": result.success,
                 "tag_state": result.tag_state,
                 "ai_tags": result.ai_tags,

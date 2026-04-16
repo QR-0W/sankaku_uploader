@@ -888,6 +888,10 @@ class SankakuAutomationClient:
                 ignore_post_ids=known_post_ids,
             )
             
+            if post_id:
+                # Give a tiny bit of time for the "Already exists" snackbar to appear after redirect
+                time.sleep(0.5)
+            
             # ALWAYS check for alerts, even if post_id was found, to catch duplicates that redirect
             alert_type, alert_text = self._detect_page_alerts(page)
             
@@ -1186,7 +1190,10 @@ class SankakuAutomationClient:
             return "", ""
         lowered = text.lower()
         
-        duplicate_terms = ("已存在", "合并到", "already exists", "merged", "has been merged", "作为编辑")
+        duplicate_terms = (
+            "已存在", "合并到", "已经存在", "already exists", "merged", 
+            "has been merged", "作为编辑", "exists", "合并"
+        )
         if any(term in lowered for term in duplicate_terms):
             return "duplicate", text
             
