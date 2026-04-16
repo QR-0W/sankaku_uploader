@@ -481,6 +481,7 @@ class SankakuAutomationClient:
             if self.config.browser_channel:
                 launch_kwargs["channel"] = self.config.browser_channel
             context = p.chromium.launch_persistent_context(**launch_kwargs)
+            self._force_english_settings(context)
             try:
                 if not diff_mode and len(items) > 1:
                     return self._upload_normal_batch_concurrent(context, items, item_result_callback)
@@ -966,6 +967,29 @@ class SankakuAutomationClient:
                     button.click(timeout=500)
             except Exception:
                 continue
+
+    def _force_english_settings(self, context) -> None:
+        """Forces English locale by setting persistent storage and cookies."""
+        try:
+            # Force localStorage values before any page navigation starts
+            context.add_init_script("""
+                try {
+                    localStorage.setItem('language', 'en');
+                    localStorage.setItem('locale', 'en');
+                    localStorage.setItem('i18nextLng', 'en');
+                    localStorage.setItem('lang', 'en');
+                } catch (e) {}
+            """)
+            # Overwrite cookies for the domain
+            domain = ".sankakucomplex.com"
+            context.add_cookies([
+                {"name": "lang", "value": "en", "domain": domain, "path": "/"},
+                {"name": "language", "value": "en", "domain": domain, "path": "/"},
+                {"name": "locale", "value": "en", "domain": domain, "path": "/"},
+            ])
+            self._trace("forced English language settings (localStorage + Cookies)")
+        except Exception as e:
+            self._trace(f"failed to force English settings: {e}")
 
     def _ensure_advanced_panel_open(self, page) -> None:
         # Check whether the parent input is already visible (panel open)
