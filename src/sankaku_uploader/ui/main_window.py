@@ -21,11 +21,13 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QTextEdit,
     QPlainTextEdit,
     QSplitter,
     QVBoxLayout,
     QWidget,
 )
+import html
 
 from sankaku_uploader.application import TaskService, UploadRunnerController
 from sankaku_uploader.domain import ItemStatus, ReviewMode, Settings, TaskStatus, TaskType, UploadTask
@@ -42,7 +44,7 @@ QMainWindow, QWidget {
 QLabel {
   color: #d8e7ff;
 }
-QLineEdit, QComboBox, QListWidget, QPlainTextEdit {
+QLineEdit, QComboBox, QListWidget, QPlainTextEdit, QTextEdit {
   background: #22303d;
   border: 1px solid #2d4052;
   border-radius: 10px;
@@ -308,7 +310,7 @@ class MainWindow(QMainWindow):
         right_layout.addLayout(review_row)
 
         right_layout.addWidget(QLabel("日志"))
-        self.log = QPlainTextEdit()
+        self.log = QTextEdit()
         self.log.setReadOnly(True)
         right_layout.addWidget(self.log, 1)
         splitter.addWidget(right)
@@ -322,7 +324,22 @@ class MainWindow(QMainWindow):
         self.setFont(app_font)
 
     def _append_log(self, message: str) -> None:
-        self.log.appendPlainText(message)
+        color = "#eaf2ff" # Default
+        if "[Trace]" in message:
+            color = "#888888"
+        elif "[Worker]" in message:
+            color = "#4aa0ff"
+        elif "上传中" in message:
+            color = "#2f8ef9"
+        elif any(x in message for x in ("成功", "success=True", "全成功", "ok", "OK")):
+            color = "#4caf50"
+        elif any(x in message for x in ("失败", "failed", "error", "ERROR", "exception")):
+            color = "#f44336"
+        elif any(x in message for x in ("等待", "Warning", "paused", "暂停", "skipped")):
+            color = "#ff9800"
+            
+        escaped = html.escape(message)
+        self.log.appendHtml(f'<span style="color: {color};">{escaped}</span>')
 
     def _load_settings_to_ui(self) -> None:
         self.upload_url_edit.setText(self.settings.upload_page_url)
