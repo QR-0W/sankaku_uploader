@@ -26,11 +26,19 @@ class FakeLocator:
         if self.selector == "button:advanced":
             self.page.counts["input[name='parent']"] = 1
 
+    def fill(self, value: str):
+        self.page.fills.append((self.selector, value))
+
+    def press(self, key: str):
+        self.page.presses.append((self.selector, key))
+
 
 class FakePage:
     def __init__(self, counts: dict[str, int]):
         self.counts = counts
         self.clicks: list[str] = []
+        self.fills: list[tuple[str, str]] = []
+        self.presses: list[tuple[str, str]] = []
 
     def locator(self, selector: str):
         normalized = selector
@@ -67,6 +75,14 @@ def test_wait_until_upload_surface_ready_login_required() -> None:
     assert "login required" in reason
 
 
+def test_wait_until_upload_surface_ready_detects_otp_inputs() -> None:
+    page = FakePage({"input[role='spinbutton']": 6})
+    client = _build_client()
+    ready, reason = client._wait_until_upload_surface_ready(page)
+    assert ready is False
+    assert "login required" in reason
+
+
 def test_ensure_advanced_panel_open_clicks_when_parent_not_visible(monkeypatch) -> None:
     page = FakePage({"button:advanced": 1})
     client = _build_client()
@@ -83,3 +99,16 @@ def test_ensure_advanced_panel_open_clicks_when_parent_not_visible(monkeypatch) 
     client._ensure_advanced_panel_open(page)
     assert "button:advanced" in page.clicks
     assert page.counts["input[name='parent']"] == 1
+
+
+def test_try_apply_minimum_tag_uses_autocomplete(monkeypatch) -> None:
+    page = FakePage({"#autocomplete": 1})
+    client = _build_client()
+    monkeypatch.setattr(
+        "sankaku_uploader.infrastructure.automation.find_first_locator",
+        lambda _page, _selectors: FakeLocator(page, "#autocomplete"),
+    )
+    ok = client._try_apply_minimum_tag(page, ["multiple_views", "1girl"])
+    assert ok is True
+    assert ("#autocomplete", "multiple_views") in page.fills
+    assert ("#autocomplete", "Enter") in page.presses

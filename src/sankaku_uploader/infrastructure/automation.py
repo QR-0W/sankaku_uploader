@@ -53,11 +53,25 @@ PASSWORD_SELECTORS: tuple[str, ...] = (
     "input[name='password']",
 )
 
+AUTH_HINT_SELECTORS: tuple[str, ...] = (
+    "input[name='email']",
+    "input[type='password']",
+    "input[name='password']",
+    "input[role='spinbutton']",
+    "input[inputmode='numeric']",
+)
+
 OVERLAY_CLOSE_SELECTORS: tuple[str, ...] = (
     "[data-testid='incognito-warning-close-button']",
     "[data-test='btn-end-onboarding']",
     "button:has-text('关闭')",
     "button:has-text('Close')",
+)
+
+TAG_INPUT_SELECTORS: tuple[str, ...] = (
+    "#autocomplete",
+    "input[placeholder*='tag' i]",
+    "input[name='tags']",
 )
 
 
@@ -253,17 +267,37 @@ class SankakuAutomationClient:
                 return AutomationUploadResult(item_id=item.item_id, success=False, ai_tags=tags, tag_state="failed", error="submit button unavailable")
             submit.click()
             try:
-                page.wait_for_load_state("networkidle", timeout=30_000)
+                page.wait_for_load_state("networkidle", timeout=10_000)
             except PlaywrightTimeoutError:
                 pass
-            uploaded_url = self._safe_url(page)
+            uploaded_url, post_id = self._wait_for_uploaded_post(page, timeout_seconds=15.0)
+            if not post_id:
+                tag_fix = self._try_apply_minimum_tag(page, tags)
+                if tag_fix:
+                    submit_retry = self._wait_for_submit(page)
+                    if submit_retry is not None:
+                        submit_retry.click()
+                        try:
+                            page.wait_for_load_state("networkidle", timeout=10_000)
+                        except PlaywrightTimeoutError:
+                            pass
+                        uploaded_url, post_id = self._wait_for_uploaded_post(page, timeout_seconds=15.0)
+                if not post_id:
+                    return AutomationUploadResult(
+                        item_id=item.item_id,
+                        success=False,
+                        ai_tags=tags,
+                        tag_state="failed",
+                        uploaded_url=uploaded_url,
+                        error="submit completed but no post id detected; site may require manual tag selection/edit before posting",
+                    )
             return AutomationUploadResult(
                 item_id=item.item_id,
                 success=True,
                 ai_tags=tags,
                 tag_state="ok" if available else "unavailable",
                 uploaded_url=uploaded_url,
-                post_id=extract_post_id(uploaded_url),
+                post_id=post_id,
             )
         except Exception as exc:
             return AutomationUploadResult(item_id=item.item_id, success=False, tag_state="failed", error=str(exc))
@@ -276,8 +310,8 @@ class SankakuAutomationClient:
             if self._selector_count(page, FILE_INPUT_SELECTORS) > 0:
                 return True, ""
 
-            if self._selector_count(page, PASSWORD_SELECTORS) > 0:
-                return False, "login required before upload (password/2FA screen detected)"
+            if self._selector_count(page, AUTH_HINT_SELECTORS) > 0:
+                return False, "login required before upload (auth/2FA screen detected)"
 
             time.sleep(self.config.poll_interval_seconds)
 
@@ -306,6 +340,27 @@ class SankakuAutomationClient:
             advanced.click()
         except Exception:
             return
+
+    def _try_apply_minimum_tag(self, page, tags: list[str]) -> bool:
+        if not tags:
+            return False
+        tag_input = find_first_locator(page, TAG_INPUT_SELECTORS)
+        if tag_input is None:
+            return False
+        candidate = str(tags[0]).strip()
+        if not candidate:
+            return False
+        try:
+            tag_input.click()
+        except Exception:
+            pass
+        try:
+            tag_input.fill(candidate)
+            tag_input.press("Enter")
+            time.sleep(self.config.poll_interval_seconds)
+            return True
+        except Exception:
+            return False
 
     @staticmethod
     def _selector_count(page, selectors: tuple[str, ...]) -> int:
@@ -349,8 +404,9 @@ class SankakuAutomationClient:
             time.sleep(self.config.poll_interval_seconds)
         return None
 
-    def _wait_for_uploaded_post(self, page) -> tuple[str, str]:
-        deadline = time.monotonic() + self.config.confirmation_timeout_seconds
+    def _wait_for_uploaded_post(self, page, timeout_seconds: float | None = None) -> tuple[str, str]:
+        timeout = self.config.confirmation_timeout_seconds if timeout_seconds is None else timeout_seconds
+        deadline = time.monotonic() + timeout
         last_url = self._safe_url(page)
         while time.monotonic() < deadline:
             last_url = self._safe_url(page)
