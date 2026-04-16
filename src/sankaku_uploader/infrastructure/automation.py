@@ -510,14 +510,25 @@ class SankakuAutomationClient:
                         )
                         continue
                     known_post_ids = self._collect_known_post_ids(context)
-                    parent_post_id = root_post_id if diff_mode and idx > 0 else ""
-                    if parent_post_id:
-                        self._trace(f"{item.file_name}: using parent_post_id={parent_post_id}")
+                    
+                    # Determine parent post ID for this item in diff mode:
+                    # - Item 0 is always the root (no parent).
+                    # - Others use root_post_id (which could be the passed-in manual ID or derived from item 0).
+                    item_parent_id = ""
+                    if diff_mode:
+                        if item.order_index == 0:
+                            item_parent_id = ""
+                        else:
+                            item_parent_id = root_post_id
+
+                    if item_parent_id:
+                        self._trace(f"{item.file_name}: using parent_post_id={item_parent_id}")
+
                     result = self._upload_one(
                         page,
                         context,
                         item,
-                        parent_post_id=parent_post_id,
+                        parent_post_id=item_parent_id,
                         known_post_ids=known_post_ids,
                     )
                     results.append(result)
@@ -526,12 +537,13 @@ class SankakuAutomationClient:
                             item_result_callback(result)
                         except Exception:
                             pass
-                    if diff_mode and not root_post_id and idx == 0 and result.post_id:
+
+                    # If this was item 0 and it succeeded, establish it as the root for the rest of this session
+                    if diff_mode and item.order_index == 0 and result.success and result.post_id:
                         root_post_id = result.post_id
-                        self._trace(f"root post id established from upload: {root_post_id}")
-                    elif diff_mode and manual_root_post_id and idx == 0 and result.post_id:
-                        self._trace(f"root post id (manual override active): {root_post_id}")
-                    if diff_mode and idx > 0 and not root_post_id:
+                        self._trace(f"root post id established from upload (order_index 0): {root_post_id}")
+                    elif diff_mode and item.order_index > 0 and not root_post_id:
+                        # Should normally not happen if the runner passes the established root ID
                         result.success = False
                         result.error = "root post id missing in diff mode"
                     self._close_extra_pages(context, keep_page=page)

@@ -169,7 +169,7 @@ def _run_upload_task(task_payload: dict[str, Any], settings_payload: dict[str, A
     results = client.upload_items(
         pending_items,
         diff_mode=task.task_type is TaskType.DIFF_GROUP,
-        manual_root_post_id=task.manual_root_post_id,
+        manual_root_post_id=task.manual_root_post_id or task.root_post_id,
         item_result_callback=result_callback,
     )
 
