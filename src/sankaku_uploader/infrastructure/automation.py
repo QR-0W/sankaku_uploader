@@ -1,0 +1,300 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+import re
+import time
+from typing import Callable, Iterable, Literal, Protocol
+
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+from playwright.sync_api import sync_playwright
+
+from sankaku_uploader.domain import UploadItem
+
+TagDecision = Literal["confirm", "skip", "retry"]
+ReviewDecisionProvider = Callable[[UploadItem, list[str], bool], TagDecision]
+
+FILE_INPUT_SELECTORS: tuple[str, ...] = (
+    "input[type='file']",
+    "input[type=file]",
+    "form input[type='file']",
+    "form input[type=file]",
+    "input[accept]",
+)
+
+SUBMIT_SELECTORS: tuple[str, ...] = (
+    "button[type='submit']",
+    "input[type='submit']",
+    "button:has-text('Upload')",
+    "button:has-text('上传')",
+    "button:has-text('Create post')",
+    "button:has-text('创建帖子')",
+)
+
+AI_TAG_SELECTORS: tuple[str, ...] = (
+    "#ai-tags",
+    "[data-testid='ai-tags']",
+    "[data-role='ai-tags']",
+    ".ai-tags",
+    ".tag-list",
+    "#tags",
+)
+
+PARENT_ID_SELECTORS: tuple[str, ...] = (
+    "input[name='parent']",
+    "input[name='parent_id']",
+    "input[name='parentId']",
+    "input[placeholder*='parent' i]",
+)
+
+
+@dataclass(slots=True)
+class AutomationConfig:
+    upload_url: str
+    profile_dir: Path
+    browser_channel: str = "msedge"
+    headless: bool = False
+    poll_interval_seconds: float = 0.5
+    ai_timeout_seconds: float = 20.0
+    submit_timeout_seconds: float = 60.0
+    confirmation_timeout_seconds: float = 1800.0
+    run_mode: str = "manual_assist"  # manual_assist | auto_submit
+
+
+@dataclass(slots=True)
+class AutomationUploadResult:
+    item_id: str
+    success: bool
+    ai_tags: list[str] = field(default_factory=list)
+    post_id: str = ""
+    uploaded_url: str = ""
+    tag_state: str = "ok"
+    error: str = ""
+
+
+class LocatorLike(Protocol):
+    def count(self) -> int: ...
+
+    @property
+    def first(self): ...
+
+
+def extract_post_id(url: str) -> str:
+    if not url:
+        return ""
+    matched = re.search(r"/posts/([A-Za-z0-9_-]+)", url)
+    if not matched:
+        return ""
+    post_id = matched.group(1)
+    if post_id.lower() in {"upload", "create"}:
+        return ""
+    return post_id
+
+
+def extract_ai_tags(page, selectors: Iterable[str] = AI_TAG_SELECTORS) -> list[str]:
+    for selector in selectors:
+        try:
+            locator = page.locator(selector)
+            if locator.count() <= 0:
+                continue
+            text = locator.first.text_content() or ""
+        except Exception:
+            continue
+        tags = [part.strip() for part in re.split(r"[\n,;]+", text) if part.strip()]
+        if tags:
+            return tags
+    return []
+
+
+def wait_for_ai_tags(page, timeout_seconds: float, poll_interval_seconds: float) -> tuple[list[str], bool]:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        tags = extract_ai_tags(page)
+        if tags:
+            return tags, True
+        time.sleep(poll_interval_seconds)
+    return [], False
+
+
+def find_first_locator(page, selectors: tuple[str, ...]):
+    for selector in selectors:
+        try:
+            locator = page.locator(selector)
+            if locator.count() > 0:
+                return locator.first
+        except Exception:
+            continue
+    return None
+
+
+def find_button_by_text(page, candidates: tuple[str, ...]):
+    normalized_candidates = [re.sub(r"\s+", "", candidate).lower() for candidate in candidates]
+    try:
+        buttons = page.locator("button")
+        for idx in range(buttons.count()):
+            loc = buttons.nth(idx)
+            try:
+                text = re.sub(r"\s+", "", loc.inner_text()).lower()
+            except Exception:
+                continue
+            if any(candidate in text for candidate in normalized_candidates) and loc.is_enabled():
+                return loc
+    except Exception:
+        return None
+    return None
+
+
+class SankakuAutomationClient:
+    def __init__(self, config: AutomationConfig, review_decision_provider: ReviewDecisionProvider | None = None) -> None:
+        self.config = config
+        self.review_decision_provider = review_decision_provider
+
+    def upload_items(self, items: list[UploadItem], *, diff_mode: bool = False) -> list[AutomationUploadResult]:
+        results: list[AutomationUploadResult] = []
+        self.config.profile_dir.mkdir(parents=True, exist_ok=True)
+
+        with sync_playwright() as p:
+            launch_kwargs = {
+                "user_data_dir": str(self.config.profile_dir),
+                "headless": self.config.headless,
+            }
+            if self.config.browser_channel:
+                launch_kwargs["channel"] = self.config.browser_channel
+            context = p.chromium.launch_persistent_context(**launch_kwargs)
+            try:
+                page = context.pages[0] if context.pages else context.new_page()
+                root_post_id = ""
+                for idx, item in enumerate(items):
+                    page.goto(self.config.upload_url, wait_until="domcontentloaded")
+                    parent_post_id = root_post_id if diff_mode and idx > 0 else ""
+                    result = self._upload_one(page, item, parent_post_id=parent_post_id)
+                    results.append(result)
+                    if diff_mode and idx == 0 and result.post_id:
+                        root_post_id = result.post_id
+                    if diff_mode and idx > 0 and not root_post_id:
+                        result.success = False
+                        result.error = "root post id missing in diff mode"
+            finally:
+                context.close()
+        return results
+
+    def _upload_one(self, page, item: UploadItem, *, parent_post_id: str) -> AutomationUploadResult:
+        try:
+            selected_by = self._select_file(page, Path(item.file_path))
+            if not selected_by:
+                return AutomationUploadResult(item_id=item.item_id, success=False, tag_state="failed", error="cannot set file")
+
+            if parent_post_id:
+                parent_input = find_first_locator(page, PARENT_ID_SELECTORS)
+                if parent_input is not None:
+                    parent_input.fill(parent_post_id)
+
+            tags, available = wait_for_ai_tags(
+                page,
+                timeout_seconds=self.config.ai_timeout_seconds,
+                poll_interval_seconds=self.config.poll_interval_seconds,
+            )
+
+            if self.config.run_mode == "manual_assist":
+                uploaded_url, post_id = self._wait_for_uploaded_post(page)
+                if not post_id:
+                    return AutomationUploadResult(
+                        item_id=item.item_id,
+                        success=False,
+                        ai_tags=tags,
+                        tag_state="failed",
+                        uploaded_url=uploaded_url,
+                        error="manual upload not completed in time",
+                    )
+                return AutomationUploadResult(
+                    item_id=item.item_id,
+                    success=True,
+                    ai_tags=tags,
+                    tag_state="ok" if available else "unavailable",
+                    post_id=post_id,
+                    uploaded_url=uploaded_url,
+                )
+
+            decision = self._review_decision(item, tags, available)
+            if decision == "skip":
+                return AutomationUploadResult(item_id=item.item_id, success=False, ai_tags=tags, tag_state="skipped", error="skipped by user")
+            if decision == "retry":
+                return AutomationUploadResult(item_id=item.item_id, success=False, ai_tags=tags, tag_state="failed", error="retry requested")
+
+            submit = self._wait_for_submit(page)
+            if submit is None:
+                return AutomationUploadResult(item_id=item.item_id, success=False, ai_tags=tags, tag_state="failed", error="submit button unavailable")
+            submit.click()
+            try:
+                page.wait_for_load_state("networkidle", timeout=30_000)
+            except PlaywrightTimeoutError:
+                pass
+            uploaded_url = self._safe_url(page)
+            return AutomationUploadResult(
+                item_id=item.item_id,
+                success=True,
+                ai_tags=tags,
+                tag_state="ok" if available else "unavailable",
+                uploaded_url=uploaded_url,
+                post_id=extract_post_id(uploaded_url),
+            )
+        except Exception as exc:
+            return AutomationUploadResult(item_id=item.item_id, success=False, tag_state="failed", error=str(exc))
+
+    def _select_file(self, page, file_path: Path) -> str:
+        upload_button = find_button_by_text(page, ("上传文件", "Upload file", "Choose file", "选择文件"))
+        if upload_button is not None:
+            try:
+                with page.expect_file_chooser(timeout=3000) as chooser_info:
+                    upload_button.click()
+                chooser_info.value.set_files(str(file_path))
+                return "file_chooser"
+            except Exception:
+                pass
+
+        file_input = find_first_locator(page, FILE_INPUT_SELECTORS)
+        if file_input is not None:
+            file_input.set_input_files(str(file_path))
+            return "input_file"
+        return ""
+
+    def _wait_for_submit(self, page):
+        deadline = time.monotonic() + self.config.submit_timeout_seconds
+        while time.monotonic() < deadline:
+            submit = find_button_by_text(page, ("创建帖子", "Create post", "提交", "Submit", "上传"))
+            if submit is None:
+                submit = find_first_locator(page, SUBMIT_SELECTORS)
+            if submit is not None:
+                try:
+                    if submit.is_enabled():
+                        return submit
+                except Exception:
+                    pass
+            time.sleep(self.config.poll_interval_seconds)
+        return None
+
+    def _wait_for_uploaded_post(self, page) -> tuple[str, str]:
+        deadline = time.monotonic() + self.config.confirmation_timeout_seconds
+        last_url = self._safe_url(page)
+        while time.monotonic() < deadline:
+            last_url = self._safe_url(page)
+            post_id = extract_post_id(last_url)
+            if post_id:
+                return last_url, post_id
+            time.sleep(self.config.poll_interval_seconds)
+        return last_url, ""
+
+    def _review_decision(self, item: UploadItem, tags: list[str], available: bool) -> TagDecision:
+        if self.review_decision_provider is None:
+            return "confirm"
+        decision = self.review_decision_provider(item, tags, available)
+        if decision in {"confirm", "skip", "retry"}:
+            return decision
+        return "confirm"
+
+    @staticmethod
+    def _safe_url(page) -> str:
+        try:
+            return str(page.url)
+        except Exception:
+            return ""

@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sankaku-uploader"
+version = "0.2.0"
+description = "Desktop assistant for Sankaku batch uploads"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "PySide6>=6.11",
+  "playwright>=1.49",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=9",
+]
+
+[project.scripts]
+sankaku-uploader = "sankaku_uploader.app:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "--basetemp=./.tmp_pytest"

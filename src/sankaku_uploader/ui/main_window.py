@@ -1,0 +1,518 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Iterable
+
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtWidgets import (
+    QApplication,
+    QComboBox,
+    QFileDialog,
+    QFormLayout,
+    QHBoxLayout,
+    QInputDialog,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMainWindow,
+    QMessageBox,
+    QPushButton,
+    QPlainTextEdit,
+    QSplitter,
+    QVBoxLayout,
+    QWidget,
+)
+
+from sankaku_uploader.application import TaskService, UploadRunnerController
+from sankaku_uploader.domain import ItemStatus, ReviewMode, Settings, TaskStatus, TaskType, UploadTask
+from sankaku_uploader.infrastructure.storage import JsonRepository
+
+
+class TaskQueueListWidget(QListWidget):
+    def __init__(self, on_paths_dropped, on_reordered, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.on_paths_dropped = on_paths_dropped
+        self.on_reordered = on_reordered
+        self.setAcceptDrops(True)
+        self.setDragDropMode(QListWidget.DragDropMode.InternalMove)
+        self.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+
+    def dragEnterEvent(self, event) -> None:  # type: ignore[override]
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+            return
+        super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event) -> None:  # type: ignore[override]
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+            return
+        super().dragMoveEvent(event)
+
+    def dropEvent(self, event) -> None:  # type: ignore[override]
+        if event.mimeData().hasUrls():
+            paths = [Path(url.toLocalFile()) for url in event.mimeData().urls() if url.isLocalFile()]
+            self.on_paths_dropped(paths)
+            event.acceptProposedAction()
+            return
+        super().dropEvent(event)
+        self.on_reordered()
+
+    def current_item_ids(self) -> list[str]:
+        item_ids: list[str] = []
+        for row in range(self.count()):
+            list_item = self.item(row)
+            item_id = list_item.data(Qt.ItemDataRole.UserRole)
+            if item_id:
+                item_ids.append(str(item_id))
+        return item_ids
+
+
+class MainWindow(QMainWindow):
+    def __init__(self) -> None:
+        super().__init__()
+        self.setWindowTitle("Sankaku Uploader V2")
+        self.resize(1380, 840)
+
+        self.repository = JsonRepository()
+        self.service = TaskService(self.repository)
+        self.settings = self.repository.load_settings()
+        self.runner = UploadRunnerController()
+
+        self.active_task_id: str | None = None
+        self.pending_review_item_id: str | None = None
+
+        self._build_ui()
+        self._load_settings_to_ui()
+        self._refresh_task_list()
+
+        self.poll_timer = QTimer(self)
+        self.poll_timer.timeout.connect(self._poll_runner)
+        self.poll_timer.start(300)
+
+    def _build_ui(self) -> None:
+        root = QWidget(self)
+        self.setCentralWidget(root)
+        layout = QVBoxLayout(root)
+
+        # Settings row
+        settings_row = QHBoxLayout()
+        layout.addLayout(settings_row)
+        form = QFormLayout()
+        settings_row.addLayout(form, 2)
+
+        self.upload_url_edit = QLineEdit()
+        self.profile_dir_edit = QLineEdit()
+        self.browser_channel_edit = QLineEdit()
+        self.review_mode_combo = QComboBox()
+        self.review_mode_combo.addItem("人工审核", ReviewMode.MANUAL_REVIEW.value)
+        self.review_mode_combo.addItem("快速通过", ReviewMode.QUICK_PASS.value)
+
+        form.addRow("上传页 URL", self.upload_url_edit)
+        form.addRow("浏览器配置目录", self.profile_dir_edit)
+        form.addRow("浏览器通道", self.browser_channel_edit)
+        form.addRow("标签模式", self.review_mode_combo)
+
+        self.save_settings_button = QPushButton("保存设置")
+        self.save_settings_button.clicked.connect(self._save_settings_from_ui)
+        settings_row.addWidget(self.save_settings_button, 0)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        layout.addWidget(splitter, 1)
+
+        # Left: task list
+        left = QWidget()
+        left_layout = QVBoxLayout(left)
+        left_layout.addWidget(QLabel("任务列表"))
+        self.task_list = QListWidget()
+        self.task_list.currentItemChanged.connect(self._on_task_selected)
+        left_layout.addWidget(self.task_list, 1)
+
+        self.new_task_type_combo = QComboBox()
+        self.new_task_type_combo.addItem("普通批量", TaskType.NORMAL_BATCH.value)
+        self.new_task_type_combo.addItem("差分组", TaskType.DIFF_GROUP.value)
+        self.new_task_button = QPushButton("新建任务")
+        self.delete_task_button = QPushButton("删除任务")
+        self.new_task_button.clicked.connect(self._create_task)
+        self.delete_task_button.clicked.connect(self._delete_task)
+        left_layout.addWidget(self.new_task_type_combo)
+        left_layout.addWidget(self.new_task_button)
+        left_layout.addWidget(self.delete_task_button)
+        splitter.addWidget(left)
+
+        # Center: queue
+        center = QWidget()
+        center_layout = QVBoxLayout(center)
+        center_layout.addWidget(QLabel("文件队列"))
+        self.queue_list = TaskQueueListWidget(self._add_paths_to_active_task, self._persist_reorder)
+        self.queue_list.currentItemChanged.connect(self._show_item_detail)
+        center_layout.addWidget(self.queue_list, 1)
+
+        queue_btn_row = QHBoxLayout()
+        self.add_files_button = QPushButton("添加文件")
+        self.add_folder_button = QPushButton("添加文件夹")
+        self.remove_button = QPushButton("删除选中")
+        self.clear_button = QPushButton("清空")
+        self.add_files_button.clicked.connect(self._pick_files)
+        self.add_folder_button.clicked.connect(self._pick_folder)
+        self.remove_button.clicked.connect(self._remove_selected_items)
+        self.clear_button.clicked.connect(self._clear_items)
+        queue_btn_row.addWidget(self.add_files_button)
+        queue_btn_row.addWidget(self.add_folder_button)
+        queue_btn_row.addWidget(self.remove_button)
+        queue_btn_row.addWidget(self.clear_button)
+        center_layout.addLayout(queue_btn_row)
+
+        run_btn_row = QHBoxLayout()
+        self.start_button = QPushButton("开始")
+        self.pause_button = QPushButton("暂停")
+        self.resume_button = QPushButton("恢复")
+        self.retry_button = QPushButton("重试失败项")
+        self.start_button.clicked.connect(self._start_task)
+        self.pause_button.clicked.connect(self._pause_task)
+        self.resume_button.clicked.connect(self._resume_task)
+        self.retry_button.clicked.connect(self._retry_failed)
+        run_btn_row.addWidget(self.start_button)
+        run_btn_row.addWidget(self.pause_button)
+        run_btn_row.addWidget(self.resume_button)
+        run_btn_row.addWidget(self.retry_button)
+        center_layout.addLayout(run_btn_row)
+        splitter.addWidget(center)
+
+        # Right: detail + logs
+        right = QWidget()
+        right_layout = QVBoxLayout(right)
+        right_layout.addWidget(QLabel("当前项详情"))
+        self.detail = QPlainTextEdit()
+        self.detail.setReadOnly(True)
+        right_layout.addWidget(self.detail, 1)
+
+        review_row = QHBoxLayout()
+        self.confirm_review_button = QPushButton("确认提交")
+        self.skip_review_button = QPushButton("跳过")
+        self.retry_review_button = QPushButton("重试")
+        self.confirm_review_button.clicked.connect(lambda: self._send_review_decision("confirm"))
+        self.skip_review_button.clicked.connect(lambda: self._send_review_decision("skip"))
+        self.retry_review_button.clicked.connect(lambda: self._send_review_decision("retry"))
+        review_row.addWidget(self.confirm_review_button)
+        review_row.addWidget(self.skip_review_button)
+        review_row.addWidget(self.retry_review_button)
+        right_layout.addLayout(review_row)
+
+        right_layout.addWidget(QLabel("日志"))
+        self.log = QPlainTextEdit()
+        self.log.setReadOnly(True)
+        right_layout.addWidget(self.log, 1)
+
+        splitter.addWidget(right)
+        splitter.setSizes([260, 640, 480])
+
+        self._set_review_buttons_enabled(False)
+
+    def _append_log(self, message: str) -> None:
+        self.log.appendPlainText(message)
+
+    def _load_settings_to_ui(self) -> None:
+        self.upload_url_edit.setText(self.settings.upload_page_url)
+        self.profile_dir_edit.setText(self.settings.profile_dir)
+        self.browser_channel_edit.setText(self.settings.browser_channel)
+        for i in range(self.review_mode_combo.count()):
+            if self.review_mode_combo.itemData(i) == self.settings.review_mode.value:
+                self.review_mode_combo.setCurrentIndex(i)
+                break
+
+    def _save_settings_from_ui(self) -> None:
+        self.settings.upload_page_url = self.upload_url_edit.text().strip() or self.settings.upload_page_url
+        self.settings.profile_dir = self.profile_dir_edit.text().strip() or self.settings.profile_dir
+        self.settings.browser_channel = self.browser_channel_edit.text().strip() or self.settings.browser_channel
+        self.settings.review_mode = ReviewMode(str(self.review_mode_combo.currentData()))
+        self.repository.save_settings(self.settings)
+        self._append_log("设置已保存")
+
+    def _refresh_task_list(self) -> None:
+        self.task_list.clear()
+        for task in self.service.list_tasks():
+            item = QListWidgetItem(f"[{task.status.value}] {task.task_name} ({task.task_type.value})")
+            item.setData(Qt.ItemDataRole.UserRole, task.task_id)
+            self.task_list.addItem(item)
+
+        if self.active_task_id:
+            for row in range(self.task_list.count()):
+                list_item = self.task_list.item(row)
+                if list_item.data(Qt.ItemDataRole.UserRole) == self.active_task_id:
+                    self.task_list.setCurrentItem(list_item)
+                    return
+
+        if self.task_list.count() > 0:
+            self.task_list.setCurrentRow(0)
+
+    def _create_task(self) -> None:
+        name, ok = QInputDialog.getText(self, "新建任务", "任务名称")
+        if not ok:
+            return
+        task_type = TaskType(str(self.new_task_type_combo.currentData()))
+        task = self.service.create_task(name, task_type)
+        self.active_task_id = task.task_id
+        self._refresh_task_list()
+        self._render_active_task()
+        self._append_log(f"创建任务：{task.task_name}")
+
+    def _delete_task(self) -> None:
+        task = self._active_task()
+        if task is None:
+            return
+        if QMessageBox.question(self, "确认", f"删除任务 {task.task_name} ?") != QMessageBox.StandardButton.Yes:
+            return
+        self.service.delete_task(task.task_id)
+        self.active_task_id = None
+        self.queue_list.clear()
+        self.detail.clear()
+        self._refresh_task_list()
+
+    def _on_task_selected(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:
+        if current is None:
+            return
+        self.active_task_id = str(current.data(Qt.ItemDataRole.UserRole))
+        self._render_active_task()
+
+    def _active_task(self) -> UploadTask | None:
+        if not self.active_task_id:
+            return None
+        try:
+            return self.service.get_task(self.active_task_id)
+        except KeyError:
+            return None
+
+    def _render_active_task(self) -> None:
+        task = self._active_task()
+        self.queue_list.clear()
+        if task is None:
+            return
+
+        for item in sorted(task.items, key=lambda x: x.order_index):
+            prefix = "[主]" if task.task_type is TaskType.DIFF_GROUP and item.order_index == 0 else "[子]" if task.task_type is TaskType.DIFF_GROUP else "[项]"
+            label = f"{prefix} {item.order_index + 1:03d} | {item.file_name} | {item.file_type.value} | {item.status.value}"
+            if item.parent_post_id:
+                label += f" | parent={item.parent_post_id}"
+            if item.created_post_id:
+                label += f" | post={item.created_post_id}"
+            list_item = QListWidgetItem(label)
+            list_item.setData(Qt.ItemDataRole.UserRole, item.item_id)
+            self.queue_list.addItem(list_item)
+
+    def _pick_files(self) -> None:
+        files, _ = QFileDialog.getOpenFileNames(self, "选择文件")
+        self._add_paths_to_active_task([Path(file) for file in files])
+
+    def _pick_folder(self) -> None:
+        directory = QFileDialog.getExistingDirectory(self, "选择文件夹")
+        if not directory:
+            return
+        root = Path(directory)
+        paths = [path for path in root.rglob("*") if path.is_file()]
+        self._add_paths_to_active_task(paths)
+
+    def _add_paths_to_active_task(self, paths: Iterable[Path]) -> None:
+        task = self._active_task()
+        if task is None:
+            QMessageBox.warning(self, "提示", "请先创建或选择任务")
+            return
+        paths = list(paths)
+        self.service.add_files(task.task_id, paths)
+        self._render_active_task()
+        self._append_log(f"添加 {len(paths)} 个文件到任务 {task.task_name}")
+
+    def _persist_reorder(self) -> None:
+        task = self._active_task()
+        if task is None:
+            return
+        ordered = self.queue_list.current_item_ids()
+        self.service.reorder_items(task.task_id, ordered)
+        self._render_active_task()
+
+    def _remove_selected_items(self) -> None:
+        task = self._active_task()
+        if task is None:
+            return
+        for list_item in self.queue_list.selectedItems():
+            item_id = str(list_item.data(Qt.ItemDataRole.UserRole))
+            self.service.remove_item(task.task_id, item_id)
+        self._render_active_task()
+
+    def _clear_items(self) -> None:
+        task = self._active_task()
+        if task is None:
+            return
+        self.service.clear_items(task.task_id)
+        self._render_active_task()
+
+    def _show_item_detail(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:
+        self.detail.clear()
+        if current is None:
+            return
+        task = self._active_task()
+        if task is None:
+            return
+        item_id = str(current.data(Qt.ItemDataRole.UserRole))
+        for item in task.items:
+            if item.item_id != item_id:
+                continue
+            lines = [
+                f"item_id: {item.item_id}",
+                f"file: {item.file_path}",
+                f"status: {item.status.value}",
+                f"detected_tags: {item.detected_tags}",
+                f"final_tags: {item.final_tags}",
+                f"parent_post_id: {item.parent_post_id}",
+                f"created_post_id: {item.created_post_id}",
+                f"error: {item.error_message}",
+            ]
+            self.detail.setPlainText("\n".join(lines))
+            return
+
+    def _start_task(self) -> None:
+        task = self._active_task()
+        if task is None:
+            return
+        if self.runner.is_running():
+            self._append_log("已有任务在执行")
+            return
+
+        self._save_settings_from_ui()
+
+        try:
+            task.validate()
+        except Exception as exc:
+            QMessageBox.warning(self, "任务校验失败", str(exc))
+            return
+
+        self.service.set_task_status(task.task_id, TaskStatus.RUNNING, force=True)
+        self.runner.start(task, self.settings)
+        self._refresh_task_list()
+        self._append_log(f"任务开始：{task.task_name}")
+
+    def _pause_task(self) -> None:
+        task = self._active_task()
+        if task is None:
+            return
+        if self.runner.is_running():
+            self.runner.stop()
+        for item in task.items:
+            if item.status in {ItemStatus.UPLOADING, ItemStatus.WAITING_TAGS, ItemStatus.WAITING_USER_CONFIRM, ItemStatus.SUBMITTING}:
+                item.set_status(ItemStatus.PENDING)
+        self.service.set_task_status(task.task_id, TaskStatus.PAUSED, force=True)
+        self.service.persist()
+        self._refresh_task_list()
+        self._render_active_task()
+        self._append_log("任务已暂停")
+
+    def _resume_task(self) -> None:
+        task = self._active_task()
+        if task is None:
+            return
+        if self.runner.is_running():
+            self._append_log("任务正在运行")
+            return
+        self.service.set_task_status(task.task_id, TaskStatus.RUNNING, force=True)
+        self.runner.start(task, self.settings)
+        self._refresh_task_list()
+        self._append_log("任务已恢复")
+
+    def _retry_failed(self) -> None:
+        task = self._active_task()
+        if task is None:
+            return
+        count = self.service.retry_failed_items(task.task_id)
+        self._render_active_task()
+        self._refresh_task_list()
+        self._append_log(f"已重置 {count} 个失败项")
+
+    def _set_review_buttons_enabled(self, enabled: bool) -> None:
+        self.confirm_review_button.setEnabled(enabled)
+        self.skip_review_button.setEnabled(enabled)
+        self.retry_review_button.setEnabled(enabled)
+
+    def _send_review_decision(self, action: str) -> None:
+        if not self.pending_review_item_id:
+            return
+        self.runner.send_decision(self.pending_review_item_id, action)
+        self.pending_review_item_id = None
+        self._set_review_buttons_enabled(False)
+        self._append_log(f"发送审核指令：{action}")
+
+    def _poll_runner(self) -> None:
+        for event in self.runner.poll():
+            if event.kind == "task_started":
+                self._append_log(f"[Worker] 任务启动：{event.payload.get('task_name')}")
+            elif event.kind == "item_status":
+                self._on_item_status(event.payload)
+            elif event.kind == "item_review":
+                self._on_item_review(event.payload)
+            elif event.kind == "item_result":
+                self._on_item_result(event.payload)
+            elif event.kind == "task_complete":
+                self._on_task_complete(event.payload)
+
+    def _on_item_status(self, payload: dict) -> None:
+        task_id = str(payload.get("task_id") or "")
+        item_id = str(payload.get("item_id") or "")
+        status = str(payload.get("status") or "")
+        if status == "uploading":
+            self.service.update_item_result(task_id, item_id, status=ItemStatus.UPLOADING)
+            self._append_log(f"上传中：{payload.get('file_name')}")
+            self._render_active_task()
+
+    def _on_item_review(self, payload: dict) -> None:
+        task_id = str(payload.get("task_id") or "")
+        item_id = str(payload.get("item_id") or "")
+        tags = list(payload.get("ai_tags") or [])
+        self.pending_review_item_id = item_id
+        self._set_review_buttons_enabled(True)
+        self.service.update_item_result(task_id, item_id, status=ItemStatus.WAITING_USER_CONFIRM, detected_tags=tags)
+        self._append_log(f"等待人工确认：{payload.get('file_name')} tags={tags}")
+        self._render_active_task()
+
+    def _on_item_result(self, payload: dict) -> None:
+        task_id = str(payload.get("task_id") or "")
+        item_id = str(payload.get("item_id") or "")
+        success = bool(payload.get("success"))
+        tags = list(payload.get("ai_tags") or [])
+        post_id = str(payload.get("post_id") or "")
+        error = str(payload.get("error") or "")
+
+        status = ItemStatus.SUCCESS if success else ItemStatus.FAILED
+        self.service.update_item_result(
+            task_id,
+            item_id,
+            status=status,
+            detected_tags=tags,
+            final_tags=tags,
+            post_id=post_id,
+            error=error,
+        )
+        detail = f"结果: item={item_id} success={success} post_id={post_id}"
+        if error:
+            detail += f" error={error}"
+        self._append_log(detail)
+        self._render_active_task()
+
+    def _on_task_complete(self, payload: dict) -> None:
+        task_id = str(payload.get("task_id") or "")
+        has_failures = bool(payload.get("has_failures"))
+        if has_failures:
+            self.service.set_task_status(task_id, TaskStatus.PARTIAL_FAILED, force=True)
+            self._append_log("任务完成（部分失败）")
+        else:
+            self.service.set_task_status(task_id, TaskStatus.COMPLETED, force=True)
+            self._append_log("任务完成（全部成功）")
+
+        self.pending_review_item_id = None
+        self._set_review_buttons_enabled(False)
+        self._refresh_task_list()
+        self._render_active_task()
+
+
+def build_app() -> QApplication:
+    return QApplication.instance() or QApplication([])
