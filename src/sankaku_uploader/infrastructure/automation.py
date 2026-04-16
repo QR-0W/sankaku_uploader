@@ -19,7 +19,7 @@ class ReviewDecision:
     tags_override: list[str] | None = None
 
 
-ReviewDecisionProvider = Callable[[UploadItem, list[str], bool], ReviewDecision | TagDecision]
+ReviewDecisionProvider = Callable[[UploadItem, list[str], bool], ReviewDecision | TagDecision | None]
 TraceHook = Callable[[str], None]
 
 FILE_INPUT_SELECTORS: tuple[str, ...] = (
@@ -557,7 +557,7 @@ class SankakuAutomationClient:
                     uploaded_url=uploaded_url,
                 )
 
-            decision = self._review_decision(item, tags, available)
+            decision = self._review_decision(page, item, tags, available)
             self._trace(f"{item.file_name}: review decision={decision.action}")
             if decision.action == "skip":
                 return AutomationUploadResult(item_id=item.item_id, success=False, ai_tags=tags, tag_state="skipped", error="skipped by user")
@@ -967,17 +967,38 @@ class SankakuAutomationClient:
         except Exception:
             return
 
-    def _review_decision(self, item: UploadItem, tags: list[str], available: bool) -> ReviewDecision:
+    def _review_decision(self, page, item: UploadItem, tags: list[str], available: bool) -> ReviewDecision:
         if self.review_decision_provider is None:
             return ReviewDecision("confirm")
-        decision = self.review_decision_provider(item, tags, available)
+
+        current_tags = _normalize_tags(tags)
+        started = time.monotonic()
+        while time.monotonic() - started < self.config.confirmation_timeout_seconds:
+            edited_tags, tagging_in_progress = _extract_tags_from_editor_section(page)
+            if edited_tags:
+                current_tags = edited_tags
+            elif not tagging_in_progress:
+                current_tags = []
+
+            decision = self.review_decision_provider(item, list(current_tags), available)
+            parsed = self._normalize_review_decision(decision)
+            if parsed is not None:
+                return parsed
+            time.sleep(min(self.config.poll_interval_seconds, 0.2))
+
+        return ReviewDecision("skip")
+
+    @staticmethod
+    def _normalize_review_decision(decision) -> ReviewDecision | None:
+        if decision is None:
+            return None
         if isinstance(decision, ReviewDecision):
             if decision.action in {"confirm", "skip", "retry"}:
                 return decision
             return ReviewDecision("confirm")
         if decision in {"confirm", "skip", "retry"}:
             return ReviewDecision(decision)
-        return ReviewDecision("confirm")
+        return None
 
     def _apply_tags_override(self, page, tags: list[str]) -> bool:
         tag_input = find_first_locator(page, TAG_INPUT_SELECTORS)

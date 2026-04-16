@@ -12,3 +12,4 @@ build/
 .mypy_cache/
 flow_record.py
 *flow_record*.py
+*_record.py

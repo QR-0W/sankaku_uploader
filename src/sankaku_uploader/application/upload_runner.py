@@ -36,23 +36,46 @@ def _run_upload_task(task_payload: dict[str, Any], settings_payload: dict[str, A
     def trace(message: str) -> None:
         emit("log", {"message": message})
 
+    review_state: dict[str, dict[str, Any]] = {}
+
     def review_provider(item, tags, available):
-        emit(
-            "item_review",
-            {
-                "task_id": task.task_id,
-                "item_id": item.item_id,
-                "file_name": item.file_name,
-                "ai_tags": list(tags),
-                "tag_available": available,
-            },
-        )
-        deadline = time.monotonic() + 3600
-        while time.monotonic() < deadline:
+        state = review_state.setdefault(item.item_id, {"initialized": False, "last_tags": None, "last_available": None})
+        tag_list = list(tags)
+        changed = (state["last_tags"] != tag_list) or (state["last_available"] != available)
+        if not state["initialized"]:
+            emit(
+                "item_review",
+                {
+                    "task_id": task.task_id,
+                    "item_id": item.item_id,
+                    "file_name": item.file_name,
+                    "ai_tags": tag_list,
+                    "tag_available": available,
+                },
+            )
+            state["initialized"] = True
+            changed = False
+        elif changed:
+            emit(
+                "item_review_update",
+                {
+                    "task_id": task.task_id,
+                    "item_id": item.item_id,
+                    "file_name": item.file_name,
+                    "ai_tags": tag_list,
+                    "tag_available": available,
+                },
+            )
+        state["last_tags"] = tag_list
+        state["last_available"] = available
+
+        while True:
             try:
-                raw = cmd_queue.get(timeout=0.25)
+                raw = cmd_queue.get_nowait()
+            except Empty:
+                return None
             except Exception:
-                continue
+                return None
             command = WorkerEvent.from_json(raw)
             if command.kind != "decision":
                 continue
@@ -67,7 +90,7 @@ def _run_upload_task(task_payload: dict[str, Any], settings_payload: dict[str, A
                     if action == "confirm" and command.payload.get("tags_override_allow_empty", False) and not payload_tags:
                         tags_override = []
                 return ReviewDecision(action=action, tags_override=tags_override)
-        return ReviewDecision(action="skip")
+        return None
 
     emit("task_started", {"task_id": task.task_id, "task_name": task.task_name, "task_type": task.task_type.value})
     trace(

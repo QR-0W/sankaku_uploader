@@ -638,6 +638,8 @@ class MainWindow(QMainWindow):
                 self._on_item_status(event.payload)
             elif event.kind == "item_review":
                 self._on_item_review(event.payload)
+            elif event.kind == "item_review_update":
+                self._on_item_review_update(event.payload)
             elif event.kind == "item_result":
                 self._on_item_result(event.payload)
             elif event.kind == "task_complete":
@@ -660,6 +662,18 @@ class MainWindow(QMainWindow):
         self._set_review_buttons_enabled(True)
         self.service.update_item_result(task_id, item_id, status=ItemStatus.WAITING_USER_CONFIRM, detected_tags=tags)
         self._append_log(f"等待人工确认：{payload.get('file_name')} tags={tags}")
+        self._render_active_task()
+
+    def _on_item_review_update(self, payload: dict) -> None:
+        task_id = str(payload.get("task_id") or "")
+        item_id = str(payload.get("item_id") or "")
+        tags = list(payload.get("ai_tags") or [])
+        self.service.update_item_result(task_id, item_id, status=ItemStatus.WAITING_USER_CONFIRM, detected_tags=tags)
+        if self.pending_review_item_id == item_id:
+            current = self.queue_list.currentItem()
+            if current is not None and str(current.data(Qt.ItemDataRole.UserRole)) == item_id:
+                self.tag_editor.setPlainText("\n".join(tags))
+        self._append_log(f"网页标签已同步：{payload.get('file_name')} ({len(tags)} tags)")
         self._render_active_task()
 
     def _on_item_result(self, payload: dict) -> None:
