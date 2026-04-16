@@ -604,7 +604,26 @@ class MainWindow(QMainWindow):
     def _send_review_decision(self, action: str) -> None:
         if not self.pending_review_item_id:
             return
-        self.runner.send_decision(self.pending_review_item_id, action)
+        tags_override = None
+        tags_override_allow_empty = False
+        if action == "confirm":
+            task, item = self._selected_item_context()
+            if task is not None and item is not None:
+                edited_tags = self._parse_manual_tags(self.tag_editor.toPlainText())
+                current_tags, _ = self._effective_item_tags(item)
+                if edited_tags != current_tags:
+                    tags_override = edited_tags
+                    tags_override_allow_empty = self.tag_editor.toPlainText().strip() == ""
+                    self.service.update_item_tags(task.task_id, item.item_id, edited_tags)
+                    self._render_active_task()
+                    self._append_log(f"确认前应用本地标签编辑：{item.file_name} ({len(edited_tags)} tags)")
+
+        self.runner.send_decision(
+            self.pending_review_item_id,
+            action,
+            tags_override=tags_override,
+            tags_override_allow_empty=tags_override_allow_empty,
+        )
         self.pending_review_item_id = None
         self._set_review_buttons_enabled(False)
         self._append_log(f"发送审核指令：{action}")

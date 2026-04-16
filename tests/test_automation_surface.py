@@ -1,7 +1,12 @@
 ﻿from pathlib import Path
 from types import SimpleNamespace
 
-from sankaku_uploader.infrastructure.automation import AutomationConfig, SankakuAutomationClient, wait_for_ai_tags
+from sankaku_uploader.infrastructure.automation import (
+    AutomationConfig,
+    ReviewDecision,
+    SankakuAutomationClient,
+    wait_for_ai_tags,
+)
 
 
 class FakeLocator:
@@ -200,6 +205,16 @@ def test_extract_post_ids_from_response_text_payload() -> None:
     assert client._extract_post_ids_from_response(response) == ["abc123"]
 
 
+def test_extract_post_ids_filters_non_post_tokens() -> None:
+    client = _build_client()
+    response = FakeResponse(
+        url="https://www.sankakucomplex.com/api/v1/upload",
+        headers={"content-type": "application/json"},
+        json_payload={"post_id": "tagging_image", "alt": "subtitles"},
+    )
+    assert client._extract_post_ids_from_response(response) == []
+
+
 def test_wait_for_ai_tags_extends_while_editor_progress(monkeypatch) -> None:
     states = [([], True), ([], True), (["late-tag"], False)]
 
@@ -224,7 +239,7 @@ def test_upload_one_syncs_web_edited_tags_before_submit(monkeypatch) -> None:
     monkeypatch.setattr(client, "_dismiss_common_overlays", lambda *_: None)
     monkeypatch.setattr(client, "_select_file", lambda *_: "input_file")
     monkeypatch.setattr("sankaku_uploader.infrastructure.automation.wait_for_ai_tags", lambda *_args, **_kwargs: (["old-tag"], True))
-    monkeypatch.setattr(client, "_review_decision", lambda *_: "confirm")
+    monkeypatch.setattr(client, "_review_decision", lambda *_: ReviewDecision("confirm"))
     monkeypatch.setattr(
         "sankaku_uploader.infrastructure.automation._extract_tags_from_editor_section",
         lambda _page: (["edited-tag", "edited-2"], False),
@@ -246,7 +261,7 @@ def test_upload_one_syncs_manual_clear_to_empty_tags(monkeypatch) -> None:
     monkeypatch.setattr(client, "_dismiss_common_overlays", lambda *_: None)
     monkeypatch.setattr(client, "_select_file", lambda *_: "input_file")
     monkeypatch.setattr("sankaku_uploader.infrastructure.automation.wait_for_ai_tags", lambda *_args, **_kwargs: (["old-tag"], True))
-    monkeypatch.setattr(client, "_review_decision", lambda *_: "confirm")
+    monkeypatch.setattr(client, "_review_decision", lambda *_: ReviewDecision("confirm"))
     monkeypatch.setattr(
         "sankaku_uploader.infrastructure.automation._extract_tags_from_editor_section",
         lambda _page: ([], False),

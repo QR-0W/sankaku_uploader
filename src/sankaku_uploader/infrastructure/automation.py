@@ -13,7 +13,13 @@ from playwright.sync_api import sync_playwright
 from sankaku_uploader.domain import UploadItem
 
 TagDecision = Literal["confirm", "skip", "retry"]
-ReviewDecisionProvider = Callable[[UploadItem, list[str], bool], TagDecision]
+@dataclass(slots=True)
+class ReviewDecision:
+    action: TagDecision
+    tags_override: list[str] | None = None
+
+
+ReviewDecisionProvider = Callable[[UploadItem, list[str], bool], ReviewDecision | TagDecision]
 TraceHook = Callable[[str], None]
 
 FILE_INPUT_SELECTORS: tuple[str, ...] = (
@@ -552,19 +558,26 @@ class SankakuAutomationClient:
                 )
 
             decision = self._review_decision(item, tags, available)
-            self._trace(f"{item.file_name}: review decision={decision}")
-            if decision == "skip":
+            self._trace(f"{item.file_name}: review decision={decision.action}")
+            if decision.action == "skip":
                 return AutomationUploadResult(item_id=item.item_id, success=False, ai_tags=tags, tag_state="skipped", error="skipped by user")
-            if decision == "retry":
+            if decision.action == "retry":
                 return AutomationUploadResult(item_id=item.item_id, success=False, ai_tags=tags, tag_state="failed", error="retry requested")
 
-            edited_tags, tagging_in_progress = _extract_tags_from_editor_section(page)
-            if edited_tags:
-                tags = edited_tags
-                self._trace(f"{item.file_name}: synced edited tags count={len(tags)}")
-            elif not tagging_in_progress:
-                tags = []
-                self._trace(f"{item.file_name}: synced edited tags => empty (manual clear or none)")
+            if decision.tags_override is not None:
+                applied = self._apply_tags_override(page, decision.tags_override)
+                tags = list(decision.tags_override)
+                self._trace(
+                    f"{item.file_name}: applied tags override count={len(tags)} success={applied}"
+                )
+            else:
+                edited_tags, tagging_in_progress = _extract_tags_from_editor_section(page)
+                if edited_tags:
+                    tags = edited_tags
+                    self._trace(f"{item.file_name}: synced edited tags count={len(tags)}")
+                elif not tagging_in_progress:
+                    tags = []
+                    self._trace(f"{item.file_name}: synced edited tags => empty (manual clear or none)")
 
             submit = self._wait_for_submit(page)
             if submit is None:
@@ -865,13 +878,23 @@ class SankakuAutomationClient:
     def _normalize_post_ids(values: Iterable[str]) -> list[str]:
         normalized: list[str] = []
         seen: set[str] = set()
+        blocked = {
+            "taggingimage",
+            "tagging_image",
+            "subtitles",
+            "thumbnail",
+            "images",
+            "preview",
+        }
         for value in values:
             post_id = str(value).strip()
             if not post_id:
                 continue
             if post_id.lower() in {"upload", "create"}:
                 continue
-            if not re.fullmatch(r"[A-Za-z0-9_-]{3,64}", post_id):
+            if post_id.lower() in blocked:
+                continue
+            if not re.fullmatch(r"[A-Za-z0-9]{5,64}", post_id):
                 continue
             if post_id in seen:
                 continue
@@ -948,13 +971,89 @@ class SankakuAutomationClient:
         except Exception:
             return
 
-    def _review_decision(self, item: UploadItem, tags: list[str], available: bool) -> TagDecision:
+    def _review_decision(self, item: UploadItem, tags: list[str], available: bool) -> ReviewDecision:
         if self.review_decision_provider is None:
-            return "confirm"
+            return ReviewDecision("confirm")
         decision = self.review_decision_provider(item, tags, available)
+        if isinstance(decision, ReviewDecision):
+            if decision.action in {"confirm", "skip", "retry"}:
+                return decision
+            return ReviewDecision("confirm")
         if decision in {"confirm", "skip", "retry"}:
-            return decision
-        return "confirm"
+            return ReviewDecision(decision)
+        return ReviewDecision("confirm")
+
+    def _apply_tags_override(self, page, tags: list[str]) -> bool:
+        tag_input = find_first_locator(page, TAG_INPUT_SELECTORS)
+        if tag_input is None:
+            return False
+
+        self._clear_current_tags_from_editor(page)
+
+        for tag in tags:
+            clean = str(tag).strip()
+            if not clean:
+                continue
+            try:
+                tag_input.click()
+                tag_input.fill(clean)
+                tag_input.press("Enter")
+                time.sleep(min(self.config.poll_interval_seconds, 0.2))
+            except Exception:
+                return False
+        return True
+
+    @staticmethod
+    def _clear_current_tags_from_editor(page) -> None:
+        try:
+            page.evaluate(
+                """
+                () => {
+                  const input =
+                    document.querySelector("#autocomplete") ||
+                    document.querySelector("input[name='tags']") ||
+                    document.querySelector("input[placeholder*='标签']") ||
+                    document.querySelector("input[placeholder*='tag' i]");
+                  if (!input) return 0;
+                  const root =
+                    input.closest(".MuiAutocomplete-root") ||
+                    input.closest(".MuiGrid-root") ||
+                    input.parentElement;
+                  if (!root) return 0;
+
+                  const fireClick = (el) => {
+                    if (!el) return;
+                    const target = el.closest("button") || el;
+                    target.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+                  };
+
+                  const clear = root.querySelector(
+                    ".MuiAutocomplete-clearIndicator,button[aria-label*='clear' i],button[title*='clear' i]"
+                  );
+                  fireClick(clear);
+
+                  const selectors = [
+                    ".MuiChip-deleteIcon",
+                    "[data-testid='CancelIcon']",
+                    "svg[data-testid='CancelIcon']",
+                  ];
+                  let guard = 0;
+                  while (guard++ < 128) {
+                    let found = false;
+                    for (const selector of selectors) {
+                      const node = root.querySelector(selector);
+                      if (!node) continue;
+                      fireClick(node);
+                      found = true;
+                      break;
+                    }
+                    if (!found) break;
+                  }
+                }
+                """
+            )
+        except Exception:
+            return
 
     @staticmethod
     def _safe_url(page) -> str:

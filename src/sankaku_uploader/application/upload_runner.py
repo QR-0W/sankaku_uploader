@@ -9,7 +9,7 @@ import json
 import time
 
 from sankaku_uploader.domain import Settings, TaskType, UploadTask
-from sankaku_uploader.infrastructure.automation import AutomationConfig, SankakuAutomationClient
+from sankaku_uploader.infrastructure.automation import AutomationConfig, ReviewDecision, SankakuAutomationClient
 
 
 @dataclass(slots=True)
@@ -60,8 +60,14 @@ def _run_upload_task(task_payload: dict[str, Any], settings_payload: dict[str, A
                 continue
             action = str(command.payload.get("action") or "").strip().lower()
             if action in {"confirm", "skip", "retry"}:
-                return action
-        return "skip"
+                tags_override = None
+                payload_tags = command.payload.get("tags_override")
+                if isinstance(payload_tags, list):
+                    tags_override = [str(tag).strip() for tag in payload_tags if str(tag).strip()]
+                    if action == "confirm" and command.payload.get("tags_override_allow_empty", False) and not payload_tags:
+                        tags_override = []
+                return ReviewDecision(action=action, tags_override=tags_override)
+        return ReviewDecision(action="skip")
 
     emit("task_started", {"task_id": task.task_id, "task_name": task.task_name, "task_type": task.task_type.value})
     trace(
@@ -159,8 +165,19 @@ class UploadRunnerController:
     def is_running(self) -> bool:
         return bool(self.process and self.process.is_alive())
 
-    def send_decision(self, item_id: str, action: str) -> None:
-        self.commands.put(WorkerEvent("decision", {"item_id": item_id, "action": action}).to_json())
+    def send_decision(
+        self,
+        item_id: str,
+        action: str,
+        *,
+        tags_override: list[str] | None = None,
+        tags_override_allow_empty: bool = False,
+    ) -> None:
+        payload = {"item_id": item_id, "action": action}
+        if tags_override is not None:
+            payload["tags_override"] = list(tags_override)
+            payload["tags_override_allow_empty"] = bool(tags_override_allow_empty)
+        self.commands.put(WorkerEvent("decision", payload).to_json())
 
     def poll(self) -> list[WorkerEvent]:
         events: list[WorkerEvent] = []
