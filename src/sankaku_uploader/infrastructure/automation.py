@@ -737,13 +737,7 @@ class SankakuAutomationClient:
             self._trace(f"{item.file_name}: file selected via {selected_by}")
 
             if parent_post_id:
-                self._ensure_advanced_panel_open(page)
-                parent_input = find_first_locator(page, PARENT_ID_SELECTORS)
-                if parent_input is not None:
-                    parent_input.fill(parent_post_id)
-                    self._trace(f"{item.file_name}: parent input filled")
-                else:
-                    self._trace(f"{item.file_name}: parent input not found")
+                self._fill_parent_id_robustly(page, parent_post_id)
 
             tags, available = wait_for_ai_tags(
                 page,
@@ -767,6 +761,7 @@ class SankakuAutomationClient:
                 available=available,
                 known_post_ids=known_post_ids,
                 response_post_ids=response_post_ids,
+                parent_post_id=parent_post_id,
             )
         except Exception as exc:
             self._trace(f"{item.file_name}: exception during upload: {exc}")
@@ -801,6 +796,7 @@ class SankakuAutomationClient:
         available: bool,
         known_post_ids: set[str],
         response_post_ids: list[str],
+        parent_post_id: str = "",
         attempt: int = 0,
     ) -> AutomationUploadResult:
             if self.config.run_mode == "manual_assist":
@@ -856,6 +852,16 @@ class SankakuAutomationClient:
                 self._trace(f"{item.file_name}: submit button unavailable")
                 self._save_debug_artifact(page, item, reason="submit-unavailable")
                 return AutomationUploadResult(item_id=item.item_id, success=False, ai_tags=tags, tag_state="failed", error="submit button unavailable")
+            # Redundant check for parent ID just before clicking submit (especially for manual review mode)
+            if parent_post_id:
+                try:
+                    current_val = page.locator("input[name='parent']").first.get_attribute("value") or ""
+                    if current_val.strip() != parent_post_id.strip():
+                        self._trace(f"{item.file_name}: parent ID went missing or changed, refilling before submit...")
+                        self._fill_parent_id_robustly(page, parent_post_id)
+                except Exception:
+                    pass
+
             submit.click()
             self._trace(f"{item.file_name}: submit clicked")
             try:
@@ -990,6 +996,35 @@ class SankakuAutomationClient:
             self._trace("forced English language settings (localStorage + Cookies)")
         except Exception as e:
             self._trace(f"failed to force English settings: {e}")
+
+    def _fill_parent_id_robustly(self, page, parent_post_id: str) -> bool:
+        """Fills the parent ID using a more robust sequence to ensure React state update."""
+        if not parent_post_id:
+            return False
+            
+        self._ensure_advanced_panel_open(page)
+        parent_input = find_first_locator(page, PARENT_ID_SELECTORS)
+        if parent_input is None:
+            self._trace("parent input not found for robust fill")
+            return False
+            
+        try:
+            # 1. Focus the element
+            parent_input.click()
+            # 2. Clear existing value (select all + backspace)
+            page.keyboard.down("Control")
+            page.keyboard.press("a")
+            page.keyboard.up("Control")
+            page.keyboard.press("Backspace")
+            # 3. Type characters with a small delay for realistic input
+            parent_input.type(parent_post_id, delay=50)
+            # 4. Blur/Commit by pressing Enter or clicking elsewhere
+            parent_input.press("Enter")
+            self._trace(f"parent ID {parent_post_id} filled robustly")
+            return True
+        except Exception as e:
+            self._trace(f"failed robust parent fill: {e}")
+            return False
 
     def _ensure_advanced_panel_open(self, page) -> None:
         # Check whether the parent input is already visible (panel open)
