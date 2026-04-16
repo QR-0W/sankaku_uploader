@@ -46,6 +46,7 @@ class FakePage:
         self.fills: list[tuple[str, str]] = []
         self.presses: list[tuple[str, str]] = []
         self.url = url
+        self.closed = False
 
     def locator(self, selector: str):
         normalized = selector
@@ -62,6 +63,9 @@ class FakePage:
 
     def wait_for_load_state(self, _state: str, timeout: int = 0):
         return None
+
+    def close(self):
+        self.closed = True
 
 
 class FakeContext:
@@ -319,3 +323,21 @@ def test_review_decision_applies_live_sync_then_waits_for_confirm(monkeypatch) -
     result = client._review_decision(page, SimpleNamespace(item_id="i1", file_name="x.png"), ["base"], True)
     assert result.action == "confirm"
     assert applied == [["a", "b"]]
+
+
+def test_select_working_page_prefers_upload_url() -> None:
+    upload_page = FakePage({}, url="https://www.sankakucomplex.com/zh-CN/posts/upload")
+    other_page = FakePage({}, url="https://www.sankakucomplex.com/zh-CN/posts/abc")
+    context = FakeContext([other_page, upload_page])
+    client = _build_client()
+    assert client._select_working_page(context) is upload_page
+
+
+def test_close_extra_pages_closes_all_but_kept_page() -> None:
+    keep = FakePage({})
+    extra = FakePage({})
+    context = FakeContext([keep, extra])
+    client = _build_client()
+    client._close_extra_pages(context, keep_page=keep)
+    assert keep.closed is False
+    assert extra.closed is True

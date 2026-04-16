@@ -442,7 +442,8 @@ class SankakuAutomationClient:
                 launch_kwargs["channel"] = self.config.browser_channel
             context = p.chromium.launch_persistent_context(**launch_kwargs)
             try:
-                page = context.pages[0] if context.pages else context.new_page()
+                page = self._select_working_page(context)
+                self._close_extra_pages(context, keep_page=page)
                 root_post_id = ""
                 for idx, item in enumerate(items):
                     self._trace(f"[{idx+1}/{len(items)}] open upload page for item={item.file_name} item_id={item.item_id}")
@@ -478,6 +479,7 @@ class SankakuAutomationClient:
                     if diff_mode and idx > 0 and not root_post_id:
                         result.success = False
                         result.error = "root post id missing in diff mode"
+                    self._close_extra_pages(context, keep_page=page)
             finally:
                 context.close()
         return results
@@ -784,6 +786,37 @@ class SankakuAutomationClient:
             if post_id:
                 post_ids.add(post_id)
         return post_ids
+
+    @staticmethod
+    def _select_working_page(context):
+        try:
+            pages = list(context.pages)
+        except Exception:
+            pages = []
+        if not pages:
+            return context.new_page()
+        for page in pages:
+            try:
+                url = str(page.url)
+            except Exception:
+                url = ""
+            if "/posts/upload" in url:
+                return page
+        return pages[0]
+
+    @staticmethod
+    def _close_extra_pages(context, *, keep_page) -> None:
+        try:
+            pages = list(context.pages)
+        except Exception:
+            return
+        for page in pages:
+            if page is keep_page:
+                continue
+            try:
+                page.close()
+            except Exception:
+                continue
 
     @staticmethod
     def _find_post_in_context(context, *, ignore_post_ids: set[str]) -> tuple[str, str]:

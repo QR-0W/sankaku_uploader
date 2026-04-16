@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Iterable
 
 from PySide6.QtCore import Qt, QTimer, QSignalBlocker
+from PySide6.QtCore import Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QApplication,
@@ -134,6 +135,17 @@ class TaskQueueListWidget(QListWidget):
         return item_ids
 
 
+class TagEditorWidget(QPlainTextEdit):
+    commitRequested = Signal()
+
+    def keyPressEvent(self, event) -> None:  # type: ignore[override]
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            super().keyPressEvent(event)
+            self.commitRequested.emit()
+            return
+        super().keyPressEvent(event)
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -147,7 +159,6 @@ class MainWindow(QMainWindow):
 
         self.active_task_id: str | None = None
         self.pending_review_item_id: str | None = None
-        self._tag_sync_pending = False
         self._last_flushed_tags: list[str] = []
 
         self._build_ui()
@@ -159,9 +170,6 @@ class MainWindow(QMainWindow):
         self.poll_timer.timeout.connect(self._poll_runner)
         self.poll_timer.start(300)
 
-        self.tag_sync_timer = QTimer(self)
-        self.tag_sync_timer.setSingleShot(True)
-        self.tag_sync_timer.timeout.connect(self._flush_pending_local_tag_sync)
 
     def _build_ui(self) -> None:
         root = QWidget(self)
@@ -263,10 +271,10 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(self.detail, 1)
 
         right_layout.addWidget(QLabel("手动标签编辑（每行或逗号分隔）"))
-        self.tag_editor = QPlainTextEdit()
+        self.tag_editor = TagEditorWidget()
         self.tag_editor.setPlaceholderText("例如：\n1girl\nsmile\noutdoors")
         self.tag_editor.setMaximumHeight(140)
-        self.tag_editor.textChanged.connect(self._on_tag_editor_changed)
+        self.tag_editor.commitRequested.connect(self._flush_pending_local_tag_sync)
         right_layout.addWidget(self.tag_editor)
 
         tag_btn_row = QHBoxLayout()
@@ -540,26 +548,16 @@ class MainWindow(QMainWindow):
                 return task, item
         return task, None
 
-    def _on_tag_editor_changed(self) -> None:
-        if not self.pending_review_item_id:
-            return
-        self._tag_sync_pending = True
-        self.tag_sync_timer.start(220)
-
     def _flush_pending_local_tag_sync(self) -> None:
         if not self.pending_review_item_id:
-            self._tag_sync_pending = False
             return
         task, item = self._selected_item_context()
         if task is None or item is None:
-            self._tag_sync_pending = False
             return
         tags = self._parse_manual_tags(self.tag_editor.toPlainText())
-        if tags == self._last_flushed_tags and self._tag_sync_pending:
-            self._tag_sync_pending = False
+        if tags == self._last_flushed_tags:
             return
         self._last_flushed_tags = list(tags)
-        self._tag_sync_pending = False
         self.service.update_item_tags(task.task_id, item.item_id, tags)
         self.runner.send_tag_sync(item.item_id, tags)
         self._append_log(f"本地标签已推送到网页：{item.file_name} ({len(tags)} tags)")
@@ -699,7 +697,6 @@ class MainWindow(QMainWindow):
             tags_override_allow_empty=tags_override_allow_empty,
         )
         self.pending_review_item_id = None
-        self._tag_sync_pending = False
         self._set_review_buttons_enabled(False)
         self._append_log(f"发送审核指令：{action}")
 
@@ -735,7 +732,13 @@ class MainWindow(QMainWindow):
         tags = list(payload.get("ai_tags") or [])
         self.pending_review_item_id = item_id
         self._set_review_buttons_enabled(True)
-        self.service.update_item_result(task_id, item_id, status=ItemStatus.WAITING_USER_CONFIRM, detected_tags=tags)
+        self.service.update_item_result(
+            task_id,
+            item_id,
+            status=ItemStatus.WAITING_USER_CONFIRM,
+            detected_tags=tags,
+            final_tags=tags,
+        )
         self._last_flushed_tags = list(tags)
         if self.queue_list.currentItem() is not None and str(self.queue_list.currentItem().data(Qt.ItemDataRole.UserRole)) == item_id:
             self._set_tag_editor_text(tags)
@@ -746,7 +749,7 @@ class MainWindow(QMainWindow):
         task_id = str(payload.get("task_id") or "")
         item_id = str(payload.get("item_id") or "")
         tags = list(payload.get("ai_tags") or [])
-        self.service.update_item_result(task_id, item_id, status=ItemStatus.WAITING_USER_CONFIRM, detected_tags=tags)
+        self.service.update_item_result(task_id, item_id, status=ItemStatus.WAITING_USER_CONFIRM, final_tags=tags)
         if self.pending_review_item_id == item_id:
             current = self.queue_list.currentItem()
             if current is not None and str(current.data(Qt.ItemDataRole.UserRole)) == item_id:
@@ -768,7 +771,6 @@ class MainWindow(QMainWindow):
             task_id,
             item_id,
             status=status,
-            detected_tags=tags,
             final_tags=tags,
             post_id=post_id,
             error=error,
