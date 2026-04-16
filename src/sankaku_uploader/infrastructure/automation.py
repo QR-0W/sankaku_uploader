@@ -29,6 +29,7 @@ SUBMIT_SELECTORS: tuple[str, ...] = (
     "button:has-text('上传')",
     "button:has-text('Create post')",
     "button:has-text('创建帖子')",
+    "[data-test='create-post']",
 )
 
 AI_TAG_SELECTORS: tuple[str, ...] = (
@@ -45,6 +46,18 @@ PARENT_ID_SELECTORS: tuple[str, ...] = (
     "input[name='parent_id']",
     "input[name='parentId']",
     "input[placeholder*='parent' i]",
+)
+
+PASSWORD_SELECTORS: tuple[str, ...] = (
+    "input[type='password']",
+    "input[name='password']",
+)
+
+OVERLAY_CLOSE_SELECTORS: tuple[str, ...] = (
+    "[data-testid='incognito-warning-close-button']",
+    "[data-test='btn-end-onboarding']",
+    "button:has-text('关闭')",
+    "button:has-text('Close')",
 )
 
 
@@ -166,6 +179,18 @@ class SankakuAutomationClient:
                 root_post_id = ""
                 for idx, item in enumerate(items):
                     page.goto(self.config.upload_url, wait_until="domcontentloaded")
+                    self._dismiss_common_overlays(page)
+                    ready, reason = self._wait_until_upload_surface_ready(page)
+                    if not ready:
+                        results.append(
+                            AutomationUploadResult(
+                                item_id=item.item_id,
+                                success=False,
+                                tag_state="failed",
+                                error=reason,
+                            )
+                        )
+                        continue
                     parent_post_id = root_post_id if diff_mode and idx > 0 else ""
                     result = self._upload_one(page, item, parent_post_id=parent_post_id)
                     results.append(result)
@@ -180,11 +205,13 @@ class SankakuAutomationClient:
 
     def _upload_one(self, page, item: UploadItem, *, parent_post_id: str) -> AutomationUploadResult:
         try:
+            self._dismiss_common_overlays(page)
             selected_by = self._select_file(page, Path(item.file_path))
             if not selected_by:
                 return AutomationUploadResult(item_id=item.item_id, success=False, tag_state="failed", error="cannot set file")
 
             if parent_post_id:
+                self._ensure_advanced_panel_open(page)
                 parent_input = find_first_locator(page, PARENT_ID_SELECTORS)
                 if parent_input is not None:
                     parent_input.fill(parent_post_id)
@@ -240,6 +267,55 @@ class SankakuAutomationClient:
             )
         except Exception as exc:
             return AutomationUploadResult(item_id=item.item_id, success=False, tag_state="failed", error=str(exc))
+
+    def _wait_until_upload_surface_ready(self, page) -> tuple[bool, str]:
+        deadline = time.monotonic() + self.config.submit_timeout_seconds
+        while time.monotonic() < deadline:
+            self._dismiss_common_overlays(page)
+
+            if self._selector_count(page, FILE_INPUT_SELECTORS) > 0:
+                return True, ""
+
+            if self._selector_count(page, PASSWORD_SELECTORS) > 0:
+                return False, "login required before upload (password/2FA screen detected)"
+
+            time.sleep(self.config.poll_interval_seconds)
+
+        return False, "upload surface not ready (file input not found within timeout)"
+
+    def _dismiss_common_overlays(self, page) -> None:
+        for selector in OVERLAY_CLOSE_SELECTORS:
+            try:
+                locator = page.locator(selector)
+                if locator.count() <= 0:
+                    continue
+                button = locator.first
+                if button.is_visible() and button.is_enabled():
+                    button.click(timeout=500)
+            except Exception:
+                continue
+
+    def _ensure_advanced_panel_open(self, page) -> None:
+        parent_input = find_first_locator(page, PARENT_ID_SELECTORS)
+        if parent_input is not None:
+            return
+        advanced = find_button_by_text(page, ("advanced", "高级", "高级选项"))
+        if advanced is None:
+            return
+        try:
+            advanced.click()
+        except Exception:
+            return
+
+    @staticmethod
+    def _selector_count(page, selectors: tuple[str, ...]) -> int:
+        count = 0
+        for selector in selectors:
+            try:
+                count += max(page.locator(selector).count(), 0)
+            except Exception:
+                continue
+        return count
 
     def _select_file(self, page, file_path: Path) -> str:
         upload_button = find_button_by_text(page, ("上传文件", "Upload file", "Choose file", "选择文件"))
