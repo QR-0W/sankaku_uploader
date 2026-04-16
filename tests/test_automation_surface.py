@@ -1,6 +1,6 @@
 ﻿from pathlib import Path
 
-from sankaku_uploader.infrastructure.automation import AutomationConfig, SankakuAutomationClient
+from sankaku_uploader.infrastructure.automation import AutomationConfig, SankakuAutomationClient, wait_for_ai_tags
 
 
 class FakeLocator:
@@ -188,3 +188,18 @@ def test_extract_post_ids_from_response_text_payload() -> None:
         text_payload='{"post_id":"abc123"}',
     )
     assert client._extract_post_ids_from_response(response) == ["abc123"]
+
+
+def test_wait_for_ai_tags_extends_while_editor_progress(monkeypatch) -> None:
+    states = [([], True), ([], True), (["late-tag"], False)]
+
+    def fake_editor(_page):
+        return states.pop(0) if states else (["late-tag"], False)
+
+    monkeypatch.setattr("sankaku_uploader.infrastructure.automation._extract_tags_from_editor_section", fake_editor)
+    monkeypatch.setattr("sankaku_uploader.infrastructure.automation.extract_ai_tags", lambda _page: [])
+    monkeypatch.setattr("sankaku_uploader.infrastructure.automation.time.sleep", lambda *_: None)
+
+    tags, available = wait_for_ai_tags(object(), timeout_seconds=0.001, poll_interval_seconds=0.0)
+    assert available is True
+    assert tags == ["late-tag"]

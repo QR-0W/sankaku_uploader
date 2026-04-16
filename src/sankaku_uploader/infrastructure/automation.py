@@ -352,11 +352,20 @@ def _extract_tag_candidates_from_buttons(page) -> list[str]:
 
 
 def wait_for_ai_tags(page, timeout_seconds: float, poll_interval_seconds: float) -> tuple[list[str], bool]:
-    deadline = time.monotonic() + timeout_seconds
-    while time.monotonic() < deadline:
-        tags = extract_ai_tags(page)
-        if tags:
-            return tags, True
+    base_deadline = time.monotonic() + timeout_seconds
+    extended_deadline = base_deadline + max(timeout_seconds * 2.0, 60.0)
+    while time.monotonic() < extended_deadline:
+        editor_tags, in_progress = _extract_tags_from_editor_section(page)
+        if editor_tags:
+            return editor_tags, True
+
+        if not in_progress:
+            tags = extract_ai_tags(page)
+            if tags:
+                return tags, True
+
+        if time.monotonic() >= base_deadline and not in_progress:
+            break
         time.sleep(poll_interval_seconds)
     return [], False
 
@@ -503,7 +512,11 @@ class SankakuAutomationClient:
                 timeout_seconds=self.config.ai_timeout_seconds,
                 poll_interval_seconds=self.config.poll_interval_seconds,
             )
-            self._trace(f"{item.file_name}: tag detect available={available} count={len(tags)} tags={tags[:8]}")
+            _, still_tagging = _extract_tags_from_editor_section(page)
+            self._trace(
+                f"{item.file_name}: tag detect available={available} count={len(tags)} "
+                f"still_tagging={still_tagging} tags={tags[:8]}"
+            )
             if not tags:
                 self._trace_tag_surface(page, item.file_name)
                 self._save_debug_artifact(page, item, reason="empty-tags")
