@@ -887,31 +887,38 @@ class SankakuAutomationClient:
                 timeout_seconds=15.0,
                 ignore_post_ids=known_post_ids,
             )
-            if not post_id:
-                alert_type, alert_text = self._detect_page_alerts(page)
-                if alert_type == "duplicate":
-                    existing_id = ""
-                    # Try to extract ID from alert text
-                    match_id = re.search(r"#( [A-Za-z0-9]{5,32}|[A-Za-z0-9]{5,32})", alert_text)
-                    if not match_id:
-                        # Try searching for numeric ID or common post ID patterns in the text
-                        match_id = re.search(r"(?:posts/|post #|post |#)(\w+)", alert_text, re.I)
-                    
-                    if match_id:
-                        existing_id = match_id.group(1).strip()
-                        self._trace(f"{item.file_name}: extracted existing post_id={existing_id} from alert")
-                    
-                    self._trace(f"{item.file_name}: Sankaku reported file already exists (duplicate)")
-                    return AutomationUploadResult(
-                        item_id=item.item_id,
-                        success=True, # We consider it "success" because it's on the site
-                        ai_tags=tags,
-                        tag_state="duplicate",
-                        post_id=existing_id,
-                        uploaded_url=self._build_post_url(existing_id) if existing_id else "",
-                        is_duplicate=True,
-                    )
+            
+            # ALWAYS check for alerts, even if post_id was found, to catch duplicates that redirect
+            alert_type, alert_text = self._detect_page_alerts(page)
+            
+            if alert_type == "duplicate":
+                existing_id = post_id # Fallback to detected ID if extraction fails
+                # Try to extract ID from alert text
+                match_id = re.search(r"#( [A-Za-z0-9]{5,32}|[A-Za-z0-9]{5,32})", alert_text)
+                if not match_id:
+                    # Try searching for numeric ID or common post ID patterns in the text
+                    match_id = re.search(r"(?:posts/|post #|post |#)(\w+)", alert_text, re.I)
                 
+                if match_id:
+                    existing_id = match_id.group(1).strip()
+                    self._trace(f"{item.file_name}: extracted existing post_id={existing_id} from alert")
+                
+                if not existing_id and post_id:
+                    existing_id = post_id
+                    self._trace(f"{item.file_name}: using redirected post_id={existing_id} as duplicate ID")
+
+                self._trace(f"{item.file_name}: Sankaku reported file already exists (duplicate)")
+                return AutomationUploadResult(
+                    item_id=item.item_id,
+                    success=True, # We consider it "success" because it's on the site
+                    ai_tags=tags,
+                    tag_state="duplicate",
+                    post_id=existing_id,
+                    uploaded_url=self._build_post_url(existing_id) if existing_id else "",
+                    is_duplicate=True,
+                )
+            
+            if not post_id:
                 if alert_type == "tag_check_required" and attempt < 3:
                     self._trace(
                         f"{item.file_name}: Sankaku requires tag review before submit (attempt {attempt+1})"
