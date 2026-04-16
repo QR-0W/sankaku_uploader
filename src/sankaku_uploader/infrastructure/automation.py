@@ -122,6 +122,12 @@ def extract_post_id(url: str) -> str:
 
 
 def extract_ai_tags(page, selectors: Iterable[str] = AI_TAG_SELECTORS) -> list[str]:
+    editor_tags, tagging_in_progress = _extract_tags_from_editor_section(page)
+    if editor_tags:
+        return editor_tags
+    if tagging_in_progress:
+        return []
+
     dom_tags = _extract_ai_tags_from_dom(page, selectors)
     if dom_tags:
         return dom_tags
@@ -197,6 +203,93 @@ def _normalize_tags(values: Iterable[str]) -> list[str]:
     return normalized
 
 
+def _extract_tags_from_editor_section(page) -> tuple[list[str], bool]:
+    try:
+        result = page.evaluate(
+            """
+            () => {
+              const clean = (value) =>
+                String(value || "")
+                  .replace(/\\s+/g, " ")
+                  .trim();
+
+              const input =
+                document.querySelector("#autocomplete") ||
+                document.querySelector("input[name='tags']") ||
+                document.querySelector("input[placeholder*='标签']") ||
+                document.querySelector("input[placeholder*='tag' i]");
+              if (!input) {
+                return { tags: [], inProgress: false };
+              }
+
+              const section =
+                input.closest(".MuiGrid-root") ||
+                input.closest("form") ||
+                input.parentElement;
+              if (!section) {
+                return { tags: [], inProgress: false };
+              }
+
+              const inProgress = Boolean(
+                section.querySelector(".MuiLinearProgress-indeterminate,[role='progressbar']")
+              );
+
+              const candidates = [];
+              const chipLike = section.querySelectorAll(
+                ".MuiChip-label, .MuiAutocomplete-tag, [data-tag], [data-testid*='tag' i]"
+              );
+              for (const node of chipLike) {
+                const text = clean(node.textContent);
+                if (text) candidates.push(text);
+              }
+
+              if (candidates.length === 0 && !inProgress) {
+                const buttons = section.querySelectorAll("button");
+                for (const button of buttons) {
+                  const text = clean(button.textContent);
+                  if (text) candidates.push(text);
+                }
+              }
+
+              return { tags: candidates, inProgress };
+            }
+            """
+        )
+    except Exception:
+        return [], False
+
+    if not isinstance(result, dict):
+        return [], False
+    raw_tags = result.get("tags")
+    in_progress = bool(result.get("inProgress", False))
+    if not isinstance(raw_tags, list):
+        return [], in_progress
+
+    blocked_controls = {
+        "清除元数据",
+        "clear metadata",
+        "创建帖子",
+        "取消自动标记",
+        "advanced",
+        "高级",
+        "提交",
+        "upload",
+        "create post",
+    }
+    blocked_controls_lower = {value.lower() for value in blocked_controls}
+    filtered = []
+    for value in raw_tags:
+        tag = str(value).strip()
+        if not tag:
+            continue
+        if tag.lower() in blocked_controls_lower:
+            continue
+        if tag in {"R15+", "R18+"}:
+            continue
+        filtered.append(tag)
+    return _normalize_tags(filtered), in_progress
+
+
 def _extract_tag_candidates_from_buttons(page) -> list[str]:
     try:
         raw = page.evaluate(
@@ -235,6 +328,10 @@ def _extract_tag_candidates_from_buttons(page) -> list[str]:
         "跳过",
         "确认",
         "提交",
+        "r15+",
+        "r18+",
+        "清除元数据",
+        "取消自动标记",
     }
     candidates: list[str] = []
     for entry in raw:

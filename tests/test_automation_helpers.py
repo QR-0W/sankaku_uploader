@@ -23,10 +23,12 @@ class FakePage:
         mapping: dict[str, str | None],
         eval_tags: list[str] | None = None,
         eval_buttons: list[str] | None = None,
+        eval_editor: dict | None = None,
     ) -> None:
         self.mapping = mapping
         self.eval_tags = eval_tags
         self.eval_buttons = eval_buttons
+        self.eval_editor = eval_editor
 
     def locator(self, selector: str):
         text = self.mapping.get(selector)
@@ -37,6 +39,8 @@ class FakePage:
             if self.eval_tags is None:
                 raise RuntimeError("evaluate not supported")
             return self.eval_tags
+        if self.eval_editor is not None:
+            return self.eval_editor
         if self.eval_buttons is None:
             raise RuntimeError("evaluate not supported")
         return self.eval_buttons
@@ -61,3 +65,20 @@ def test_extract_ai_tags_prefers_dom_scan_and_dedupes() -> None:
 def test_extract_ai_tags_fallback_to_button_candidates() -> None:
     page = FakePage({}, eval_buttons=["Create post", "multiple_views", "1girl", "Advanced"])
     assert extract_ai_tags(page) == ["multiple_views", "1girl"]
+
+
+def test_extract_ai_tags_ignores_rating_controls_when_editor_tags_exist() -> None:
+    page = FakePage(
+        {},
+        eval_editor={"tags": ["R15+", "R18+", "clear metadata", "1girl"], "inProgress": False},
+    )
+    assert extract_ai_tags(page) == ["1girl"]
+
+
+def test_extract_ai_tags_waits_when_editor_in_progress() -> None:
+    page = FakePage(
+        {},
+        eval_buttons=["R15+", "R18+", "清除元数据"],
+        eval_editor={"tags": [], "inProgress": True},
+    )
+    assert extract_ai_tags(page) == []
