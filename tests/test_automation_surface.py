@@ -40,13 +40,14 @@ class FakeLocator:
 
 
 class FakePage:
-    def __init__(self, counts: dict[str, int], url: str = "https://example.com/upload"):
+    def __init__(self, counts: dict[str, int], url: str = "https://example.com/upload", evaluate_result=None):
         self.counts = counts
         self.clicks: list[str] = []
         self.fills: list[tuple[str, str]] = []
         self.presses: list[tuple[str, str]] = []
         self.url = url
         self.closed = False
+        self.evaluate_result = evaluate_result
 
     def locator(self, selector: str):
         normalized = selector
@@ -67,10 +68,23 @@ class FakePage:
     def close(self):
         self.closed = True
 
+    def evaluate(self, *_args, **_kwargs):
+        if self.evaluate_result is not None:
+            return self.evaluate_result
+        return ""
+
 
 class FakeContext:
     def __init__(self, pages):
         self.pages = pages
+
+    def close(self):
+        return None
+
+    def new_page(self):
+        page = FakePage({})
+        self.pages.append(page)
+        return page
 
 
 class FakeResponse:
@@ -341,3 +355,47 @@ def test_close_extra_pages_closes_all_but_kept_page() -> None:
     client._close_extra_pages(context, keep_page=keep)
     assert keep.closed is False
     assert extra.closed is True
+
+
+def test_detect_tag_check_required_from_alert_text() -> None:
+    page = FakePage({}, evaluate_result="需要检查标签后才能创建帖子")
+    client = _build_client()
+    assert "检查标签" in client._detect_tag_check_required(page)
+
+
+def test_detect_tag_check_required_ignores_unrelated_text() -> None:
+    page = FakePage({}, evaluate_result="上传完成，正在处理图片")
+    client = _build_client()
+    assert client._detect_tag_check_required(page) == ""
+
+
+def test_upload_items_uses_concurrent_path_for_normal_batches(monkeypatch) -> None:
+    client = _build_client()
+    calls: list[int] = []
+
+    monkeypatch.setattr(
+        client,
+        "_upload_normal_batch_concurrent",
+        lambda _context, items: calls.append(len(items)) or [],
+    )
+
+    class FakeChromium:
+        def launch_persistent_context(self, **_kwargs):
+            return FakeContext([FakePage({})])
+
+    class FakePlaywright:
+        chromium = FakeChromium()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr("sankaku_uploader.infrastructure.automation.sync_playwright", lambda: FakePlaywright())
+    items = [
+        SimpleNamespace(item_id="1", file_name="a.png", file_path="a.png"),
+        SimpleNamespace(item_id="2", file_name="b.png", file_path="b.png"),
+    ]
+    client.upload_items(items, diff_mode=False)
+    assert calls == [2]

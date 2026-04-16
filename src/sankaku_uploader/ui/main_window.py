@@ -159,6 +159,7 @@ class MainWindow(QMainWindow):
 
         self.active_task_id: str | None = None
         self.pending_review_item_id: str | None = None
+        self.pending_review_item_ids: set[str] = set()
         self._last_flushed_tags: list[str] = []
 
         self._build_ui()
@@ -549,10 +550,8 @@ class MainWindow(QMainWindow):
         return task, None
 
     def _flush_pending_local_tag_sync(self) -> None:
-        if not self.pending_review_item_id:
-            return
         task, item = self._selected_item_context()
-        if task is None or item is None:
+        if task is None or item is None or item.item_id not in self.pending_review_item_ids:
             return
         tags = self._parse_manual_tags(self.tag_editor.toPlainText())
         if tags == self._last_flushed_tags:
@@ -667,7 +666,8 @@ class MainWindow(QMainWindow):
         self.retry_review_button.setEnabled(enabled)
 
     def _send_review_decision(self, action: str) -> None:
-        if not self.pending_review_item_id:
+        target_item_id = self._current_review_item_id()
+        if not target_item_id:
             return
         if action == "confirm":
             self._flush_pending_local_tag_sync()
@@ -691,14 +691,23 @@ class MainWindow(QMainWindow):
                     self._append_log(f"确认前强制应用本地标签：{item.file_name} ({len(edited_tags)} tags)")
 
         self.runner.send_decision(
-            self.pending_review_item_id,
+            target_item_id,
             action,
             tags_override=tags_override,
             tags_override_allow_empty=tags_override_allow_empty,
         )
-        self.pending_review_item_id = None
-        self._set_review_buttons_enabled(False)
+        self.pending_review_item_ids.discard(target_item_id)
+        self.pending_review_item_id = next(iter(self.pending_review_item_ids), None)
+        self._set_review_buttons_enabled(bool(self.pending_review_item_ids))
         self._append_log(f"发送审核指令：{action}")
+
+    def _current_review_item_id(self) -> str | None:
+        task, item = self._selected_item_context()
+        if item is not None and item.item_id in self.pending_review_item_ids:
+            return item.item_id
+        if self.pending_review_item_id in self.pending_review_item_ids:
+            return self.pending_review_item_id
+        return next(iter(self.pending_review_item_ids), None)
 
     def _poll_runner(self) -> None:
         for event in self.runner.poll():
@@ -731,6 +740,7 @@ class MainWindow(QMainWindow):
         item_id = str(payload.get("item_id") or "")
         tags = list(payload.get("ai_tags") or [])
         self.pending_review_item_id = item_id
+        self.pending_review_item_ids.add(item_id)
         self._set_review_buttons_enabled(True)
         self.service.update_item_result(
             task_id,
@@ -749,8 +759,11 @@ class MainWindow(QMainWindow):
         task_id = str(payload.get("task_id") or "")
         item_id = str(payload.get("item_id") or "")
         tags = list(payload.get("ai_tags") or [])
+        self.pending_review_item_id = item_id
+        self.pending_review_item_ids.add(item_id)
+        self._set_review_buttons_enabled(True)
         self.service.update_item_result(task_id, item_id, status=ItemStatus.WAITING_USER_CONFIRM, final_tags=tags)
-        if self.pending_review_item_id == item_id:
+        if item_id in self.pending_review_item_ids:
             current = self.queue_list.currentItem()
             if current is not None and str(current.data(Qt.ItemDataRole.UserRole)) == item_id:
                 self._set_tag_editor_text(tags)
@@ -767,6 +780,10 @@ class MainWindow(QMainWindow):
         error = str(payload.get("error") or "")
 
         status = ItemStatus.SUCCESS if success else ItemStatus.FAILED
+        if success:
+            self.pending_review_item_ids.discard(item_id)
+            if self.pending_review_item_id == item_id:
+                self.pending_review_item_id = next(iter(self.pending_review_item_ids), None)
         self.service.update_item_result(
             task_id,
             item_id,
@@ -792,6 +809,7 @@ class MainWindow(QMainWindow):
             self._append_log("任务完成（全部成功）")
 
         self.pending_review_item_id = None
+        self.pending_review_item_ids.clear()
         self._set_review_buttons_enabled(False)
         self._refresh_task_list()
         self._render_active_task()

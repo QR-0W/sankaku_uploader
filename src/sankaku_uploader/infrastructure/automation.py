@@ -95,6 +95,7 @@ class AutomationConfig:
     confirmation_timeout_seconds: float = 1800.0
     run_mode: str = "manual_assist"  # manual_assist | auto_submit
     debug_dir: Path | None = None
+    max_concurrent_pages: int = 3
 
 
 @dataclass(slots=True)
@@ -105,6 +106,18 @@ class AutomationUploadResult:
     post_id: str = ""
     uploaded_url: str = ""
     tag_state: str = "ok"
+    error: str = ""
+
+
+@dataclass(slots=True)
+class PreparedUpload:
+    item: UploadItem
+    page: object
+    known_post_ids: set[str]
+    tags: list[str] = field(default_factory=list)
+    available: bool = False
+    response_post_ids: list[str] = field(default_factory=list)
+    response_handler: object | None = None
     error: str = ""
 
 
@@ -442,6 +455,9 @@ class SankakuAutomationClient:
                 launch_kwargs["channel"] = self.config.browser_channel
             context = p.chromium.launch_persistent_context(**launch_kwargs)
             try:
+                if not diff_mode and len(items) > 1:
+                    return self._upload_normal_batch_concurrent(context, items)
+
                 page = self._select_working_page(context)
                 self._close_extra_pages(context, keep_page=page)
                 root_post_id = ""
@@ -484,20 +500,143 @@ class SankakuAutomationClient:
                 context.close()
         return results
 
+    def _upload_normal_batch_concurrent(self, context, items: list[UploadItem]) -> list[AutomationUploadResult]:
+        results: list[AutomationUploadResult] = []
+        chunk_size = max(1, min(int(self.config.max_concurrent_pages or 1), len(items)))
+        self._trace(f"normal batch concurrent mode: pages={chunk_size} items={len(items)}")
+
+        for start in range(0, len(items), chunk_size):
+            chunk = items[start : start + chunk_size]
+            prepared: list[PreparedUpload] = []
+            keep_page = self._select_working_page(context)
+            self._close_extra_pages(context, keep_page=keep_page)
+
+            for offset, item in enumerate(chunk):
+                page = keep_page if offset == 0 else context.new_page()
+                self._trace(
+                    f"[{start+offset+1}/{len(items)}] prepare upload page for item={item.file_name} item_id={item.item_id}"
+                )
+                prepared_upload = self._prepare_upload_page(page, context, item)
+                prepared.append(prepared_upload)
+
+            self._wait_for_prepared_tags(prepared)
+
+            for prepared_upload in prepared:
+                if prepared_upload.error:
+                    results.append(
+                        AutomationUploadResult(
+                            item_id=prepared_upload.item.item_id,
+                            success=False,
+                            tag_state="failed",
+                            error=prepared_upload.error,
+                        )
+                    )
+                    self._detach_prepared_upload(prepared_upload)
+                    continue
+
+                # Create review cards for all files as soon as their tags are ready. The provider is non-blocking
+                # and will return None until the user confirms a specific item.
+                if self.review_decision_provider is not None:
+                    self.review_decision_provider(prepared_upload.item, list(prepared_upload.tags), prepared_upload.available)
+
+            for prepared_upload in prepared:
+                if prepared_upload.error:
+                    continue
+                result = self._review_and_submit_prepared(prepared_upload, context)
+                results.append(result)
+                self._detach_prepared_upload(prepared_upload)
+
+            self._close_extra_pages(context, keep_page=keep_page)
+
+        return results
+
+    def _prepare_upload_page(self, page, context, item: UploadItem) -> PreparedUpload:
+        known_post_ids = self._collect_known_post_ids(context)
+        response_post_ids, response_handler = self._attach_response_capture(page, item, known_post_ids)
+        prepared = PreparedUpload(
+            item=item,
+            page=page,
+            known_post_ids=known_post_ids,
+            response_post_ids=response_post_ids,
+            response_handler=response_handler,
+        )
+        try:
+            page.goto(self.config.upload_url, wait_until="domcontentloaded")
+            self._dismiss_common_overlays(page)
+            ready, reason = self._wait_until_upload_surface_ready(page)
+            if not ready:
+                prepared.error = reason
+                self._trace(f"upload surface not ready for {item.file_name}: {reason}")
+                return prepared
+
+            selected_by = self._select_file(page, Path(item.file_path))
+            if not selected_by:
+                prepared.error = "cannot set file"
+                self._trace(f"{item.file_name}: file selection failed")
+                return prepared
+            self._trace(f"{item.file_name}: file selected via {selected_by}")
+        except Exception as exc:
+            prepared.error = str(exc)
+            self._trace(f"{item.file_name}: prepare exception: {exc}")
+        return prepared
+
+    def _wait_for_prepared_tags(self, prepared_uploads: list[PreparedUpload]) -> None:
+        pending = [item for item in prepared_uploads if not item.error]
+        deadline = time.monotonic() + self.config.ai_timeout_seconds + max(self.config.ai_timeout_seconds * 2.0, 60.0)
+        while pending and time.monotonic() < deadline:
+            still_pending: list[PreparedUpload] = []
+            for prepared in pending:
+                tags = extract_ai_tags(prepared.page)
+                _, still_tagging = _extract_tags_from_editor_section(prepared.page)
+                if tags:
+                    prepared.tags = tags
+                    prepared.available = True
+                    self._trace(
+                        f"{prepared.item.file_name}: tag detect available=True count={len(tags)} "
+                        f"still_tagging={still_tagging} tags={tags[:8]}"
+                    )
+                    continue
+                if still_tagging:
+                    still_pending.append(prepared)
+                else:
+                    prepared.tags = []
+                    prepared.available = False
+                    self._trace(
+                        f"{prepared.item.file_name}: tag detect available=False count=0 still_tagging=False tags=[]"
+                    )
+            pending = still_pending
+            if pending:
+                time.sleep(self.config.poll_interval_seconds)
+
+        for prepared in pending:
+            prepared.tags = []
+            prepared.available = False
+            self._trace(f"{prepared.item.file_name}: tag detect timed out in concurrent mode")
+            self._trace_tag_surface(prepared.page, prepared.item.file_name)
+            self._save_debug_artifact(prepared.page, prepared.item, reason="empty-tags")
+
+    def _review_and_submit_prepared(self, prepared: PreparedUpload, context) -> AutomationUploadResult:
+        try:
+            return self._review_and_submit(
+                prepared.page,
+                context,
+                prepared.item,
+                tags=prepared.tags,
+                available=prepared.available,
+                known_post_ids=prepared.known_post_ids,
+                response_post_ids=prepared.response_post_ids,
+            )
+        except Exception as exc:
+            self._trace(f"{prepared.item.file_name}: exception during prepared submit: {exc}")
+            self._save_debug_artifact(prepared.page, prepared.item, reason=f"exception-{type(exc).__name__}")
+            return AutomationUploadResult(prepared.item.item_id, False, tag_state="failed", error=str(exc))
+
+    def _detach_prepared_upload(self, prepared: PreparedUpload) -> None:
+        if prepared.response_handler is not None:
+            self._detach_response_listener(prepared.page, prepared.response_handler)
+
     def _upload_one(self, page, context, item: UploadItem, *, parent_post_id: str, known_post_ids: set[str]) -> AutomationUploadResult:
-        response_post_ids: list[str] = []
-
-        def on_response(response) -> None:
-            ids = self._extract_post_ids_from_response(response)
-            for post_id in ids:
-                if post_id in known_post_ids:
-                    continue
-                if post_id in response_post_ids:
-                    continue
-                response_post_ids.append(post_id)
-                self._trace(f"{item.file_name}: post id captured from response={post_id}")
-
-        page.on("response", on_response)
+        response_post_ids, on_response = self._attach_response_capture(page, item, known_post_ids)
         try:
             self._dismiss_common_overlays(page)
             selected_by = self._select_file(page, Path(item.file_path))
@@ -529,6 +668,50 @@ class SankakuAutomationClient:
                 self._trace_tag_surface(page, item.file_name)
                 self._save_debug_artifact(page, item, reason="empty-tags")
 
+            return self._review_and_submit(
+                page,
+                context,
+                item,
+                tags=tags,
+                available=available,
+                known_post_ids=known_post_ids,
+                response_post_ids=response_post_ids,
+            )
+        except Exception as exc:
+            self._trace(f"{item.file_name}: exception during upload: {exc}")
+            self._save_debug_artifact(page, item, reason=f"exception-{type(exc).__name__}")
+            return AutomationUploadResult(item_id=item.item_id, success=False, tag_state="failed", error=str(exc))
+        finally:
+            self._detach_response_listener(page, on_response)
+
+    def _attach_response_capture(self, page, item: UploadItem, known_post_ids: set[str]):
+        response_post_ids: list[str] = []
+
+        def on_response(response) -> None:
+            ids = self._extract_post_ids_from_response(response)
+            for post_id in ids:
+                if post_id in known_post_ids:
+                    continue
+                if post_id in response_post_ids:
+                    continue
+                response_post_ids.append(post_id)
+                self._trace(f"{item.file_name}: post id captured from response={post_id}")
+
+        page.on("response", on_response)
+        return response_post_ids, on_response
+
+    def _review_and_submit(
+        self,
+        page,
+        context,
+        item: UploadItem,
+        *,
+        tags: list[str],
+        available: bool,
+        known_post_ids: set[str],
+        response_post_ids: list[str],
+        attempt: int = 0,
+    ) -> AutomationUploadResult:
             if self.config.run_mode == "manual_assist":
                 uploaded_url, post_id = self._wait_for_uploaded_post(
                     page,
@@ -595,6 +778,22 @@ class SankakuAutomationClient:
                 ignore_post_ids=known_post_ids,
             )
             if not post_id:
+                tag_check_message = self._detect_tag_check_required(page)
+                if tag_check_message and attempt < 3:
+                    self._trace(
+                        f"{item.file_name}: Sankaku requires tag review before submit: {tag_check_message}"
+                    )
+                    # Keep the page alive and return to review state instead of treating this as an upload failure.
+                    return self._review_and_submit(
+                        page,
+                        context,
+                        item,
+                        tags=tags,
+                        available=False,
+                        known_post_ids=known_post_ids,
+                        response_post_ids=response_post_ids,
+                        attempt=attempt + 1,
+                    )
                 tag_fix = self._try_apply_minimum_tag(page, tags)
                 self._trace(f"{item.file_name}: first submit got no post_id, tag_fix_applied={tag_fix}")
                 if tag_fix:
@@ -636,12 +835,6 @@ class SankakuAutomationClient:
                 uploaded_url=uploaded_url,
                 post_id=post_id,
             )
-        except Exception as exc:
-            self._trace(f"{item.file_name}: exception during upload: {exc}")
-            self._save_debug_artifact(page, item, reason=f"exception-{type(exc).__name__}")
-            return AutomationUploadResult(item_id=item.item_id, success=False, tag_state="failed", error=str(exc))
-        finally:
-            self._detach_response_listener(page, on_response)
 
     def _wait_until_upload_surface_ready(self, page) -> tuple[bool, str]:
         deadline = time.monotonic() + self.config.submit_timeout_seconds
@@ -744,6 +937,48 @@ class SankakuAutomationClient:
                     pass
             time.sleep(self.config.poll_interval_seconds)
         return None
+
+    @staticmethod
+    def _detect_tag_check_required(page) -> str:
+        try:
+            text = page.evaluate(
+                """
+                () => {
+                  const selectors = [
+                    "[role='alert']",
+                    ".MuiAlert-message",
+                    ".MuiSnackbarContent-message",
+                    ".toast",
+                    ".notification",
+                    ".error",
+                    ".warning",
+                    "body"
+                  ];
+                  const chunks = [];
+                  for (const selector of selectors) {
+                    for (const node of Array.from(document.querySelectorAll(selector)).slice(0, 6)) {
+                      const txt = String(node.textContent || "").replace(/\\s+/g, " ").trim();
+                      if (txt) chunks.push(txt);
+                    }
+                    if (chunks.length >= 3) break;
+                  }
+                  return chunks.join(" | ").slice(0, 1200);
+                }
+                """
+            )
+        except Exception:
+            return ""
+        if not isinstance(text, str) or not text.strip():
+            return ""
+        lowered = text.lower()
+        tag_terms = ("tag", "tags", "标签", "標籤", "tagging")
+        review_terms = ("check", "review", "edit", "modify", "change", "確認", "检查", "檢查", "修改", "更改", "确认")
+        blocking_terms = ("required", "must", "need", "需要", "必须", "必須", "无法", "不能", "can't", "cannot")
+        if any(term in lowered for term in tag_terms) and (
+            any(term in lowered for term in review_terms) or any(term in lowered for term in blocking_terms)
+        ):
+            return " ".join(text.split())[:300]
+        return ""
 
     def _wait_for_uploaded_post(
         self,
