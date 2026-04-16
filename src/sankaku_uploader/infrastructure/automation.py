@@ -558,6 +558,14 @@ class SankakuAutomationClient:
             if decision == "retry":
                 return AutomationUploadResult(item_id=item.item_id, success=False, ai_tags=tags, tag_state="failed", error="retry requested")
 
+            edited_tags, tagging_in_progress = _extract_tags_from_editor_section(page)
+            if edited_tags:
+                tags = edited_tags
+                self._trace(f"{item.file_name}: synced edited tags count={len(tags)}")
+            elif not tagging_in_progress:
+                tags = []
+                self._trace(f"{item.file_name}: synced edited tags => empty (manual clear or none)")
+
             submit = self._wait_for_submit(page)
             if submit is None:
                 self._trace(f"{item.file_name}: submit button unavailable")

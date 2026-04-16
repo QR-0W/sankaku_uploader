@@ -1,4 +1,5 @@
 ﻿from pathlib import Path
+from types import SimpleNamespace
 
 from sankaku_uploader.infrastructure.automation import AutomationConfig, SankakuAutomationClient, wait_for_ai_tags
 
@@ -47,6 +48,15 @@ class FakePage:
             # not needed for these tests
             return FakeLocator(self, selector)
         return FakeLocator(self, normalized)
+
+    def on(self, _event: str, _handler):
+        return None
+
+    def remove_listener(self, _event: str, _handler):
+        return None
+
+    def wait_for_load_state(self, _state: str, timeout: int = 0):
+        return None
 
 
 class FakeContext:
@@ -203,3 +213,47 @@ def test_wait_for_ai_tags_extends_while_editor_progress(monkeypatch) -> None:
     tags, available = wait_for_ai_tags(object(), timeout_seconds=0.001, poll_interval_seconds=0.0)
     assert available is True
     assert tags == ["late-tag"]
+
+
+def test_upload_one_syncs_web_edited_tags_before_submit(monkeypatch) -> None:
+    page = FakePage({})
+    context = FakeContext([page])
+    client = _build_client()
+    client.config.run_mode = "auto_submit"
+
+    monkeypatch.setattr(client, "_dismiss_common_overlays", lambda *_: None)
+    monkeypatch.setattr(client, "_select_file", lambda *_: "input_file")
+    monkeypatch.setattr("sankaku_uploader.infrastructure.automation.wait_for_ai_tags", lambda *_args, **_kwargs: (["old-tag"], True))
+    monkeypatch.setattr(client, "_review_decision", lambda *_: "confirm")
+    monkeypatch.setattr(
+        "sankaku_uploader.infrastructure.automation._extract_tags_from_editor_section",
+        lambda _page: (["edited-tag", "edited-2"], False),
+    )
+    monkeypatch.setattr(client, "_wait_for_submit", lambda _page: FakeLocator(page, "submit"))
+    monkeypatch.setattr(client, "_wait_for_uploaded_post", lambda *_args, **_kwargs: ("https://www.sankakucomplex.com/posts/abc", "abc"))
+
+    result = client._upload_one(page, context, SimpleNamespace(item_id="i1", file_name="x.png", file_path="x.png"), parent_post_id="", known_post_ids=set())
+    assert result.success is True
+    assert result.ai_tags == ["edited-tag", "edited-2"]
+
+
+def test_upload_one_syncs_manual_clear_to_empty_tags(monkeypatch) -> None:
+    page = FakePage({})
+    context = FakeContext([page])
+    client = _build_client()
+    client.config.run_mode = "auto_submit"
+
+    monkeypatch.setattr(client, "_dismiss_common_overlays", lambda *_: None)
+    monkeypatch.setattr(client, "_select_file", lambda *_: "input_file")
+    monkeypatch.setattr("sankaku_uploader.infrastructure.automation.wait_for_ai_tags", lambda *_args, **_kwargs: (["old-tag"], True))
+    monkeypatch.setattr(client, "_review_decision", lambda *_: "confirm")
+    monkeypatch.setattr(
+        "sankaku_uploader.infrastructure.automation._extract_tags_from_editor_section",
+        lambda _page: ([], False),
+    )
+    monkeypatch.setattr(client, "_wait_for_submit", lambda _page: FakeLocator(page, "submit"))
+    monkeypatch.setattr(client, "_wait_for_uploaded_post", lambda *_args, **_kwargs: ("https://www.sankakucomplex.com/posts/abc", "abc"))
+
+    result = client._upload_one(page, context, SimpleNamespace(item_id="i1", file_name="x.png", file_path="x.png"), parent_post_id="", known_post_ids=set())
+    assert result.success is True
+    assert result.ai_tags == []

@@ -91,6 +91,7 @@ class TaskService:
             item.detected_tags = list(detected_tags)
         if final_tags is not None:
             item.final_tags = list(final_tags)
+            item.final_tags_locked = False
         if post_id:
             item.created_post_id = post_id
             if task.task_type is TaskType.DIFF_GROUP and item.order_index == 0:
@@ -102,6 +103,7 @@ class TaskService:
         task = self.get_task(task_id)
         item = self._get_item(task, item_id)
         item.final_tags = list(final_tags)
+        item.final_tags_locked = True
         item.touch()
         task.touch()
         self._save()

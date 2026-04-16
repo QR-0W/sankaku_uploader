@@ -33,6 +33,7 @@ class UploadItem:
     status: ItemStatus = ItemStatus.PENDING
     detected_tags: list[str] = field(default_factory=list)
     final_tags: list[str] = field(default_factory=list)
+    final_tags_locked: bool = False
     parent_post_id: str = ""
     created_post_id: str = ""
     error_message: str = ""
@@ -81,6 +82,7 @@ class UploadItem:
             "status": self.status.value,
             "detected_tags": list(self.detected_tags),
             "final_tags": list(self.final_tags),
+            "final_tags_locked": self.final_tags_locked,
             "parent_post_id": self.parent_post_id,
             "created_post_id": self.created_post_id,
             "error_message": self.error_message,
@@ -100,6 +102,7 @@ class UploadItem:
             status=ItemStatus(str(data.get("status") or ItemStatus.PENDING.value)),
             detected_tags=list(data.get("detected_tags") or []),
             final_tags=list(data.get("final_tags") or []),
+            final_tags_locked=bool(data.get("final_tags_locked", False)),
             parent_post_id=str(data.get("parent_post_id") or ""),
             created_post_id=str(data.get("created_post_id") or ""),
             error_message=str(data.get("error_message") or ""),

@@ -54,3 +54,18 @@ def test_update_item_tags(tmp_path: Path) -> None:
     service.update_item_tags(task.task_id, added[0].item_id, ["1girl", "smile"])
     loaded = service.get_task(task.task_id)
     assert loaded.items[0].final_tags == ["1girl", "smile"]
+    assert loaded.items[0].final_tags_locked is True
+
+
+def test_update_item_tags_allows_manual_clear(tmp_path: Path) -> None:
+    repo = JsonRepository(base_dir=tmp_path)
+    service = TaskService(repo)
+    task = service.create_task("tags", TaskType.NORMAL_BATCH)
+    file = tmp_path / "a.png"
+    file.write_text("x", encoding="utf-8")
+    added = service.add_files(task.task_id, [file])
+
+    service.update_item_tags(task.task_id, added[0].item_id, [])
+    loaded = service.get_task(task.task_id)
+    assert loaded.items[0].final_tags == []
+    assert loaded.items[0].final_tags_locked is True

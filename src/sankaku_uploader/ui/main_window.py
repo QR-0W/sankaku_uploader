@@ -397,14 +397,24 @@ class MainWindow(QMainWindow):
             f"状态: {item.status.value}   类型: {item.file_type.value}   "
             f"post: {item.created_post_id or '-'}   parent: {item.parent_post_id or '-'}"
         )
-        tags = item.final_tags or item.detected_tags
+        tags, manual_cleared = self._effective_item_tags(item)
         if tags:
             preview = tags[:10]
             suffix = " …" if len(tags) > 10 else ""
             line3 = "🏷 " + "  ·  ".join(preview) + suffix
+        elif manual_cleared:
+            line3 = "🏷 已手动清空标签"
         else:
             line3 = "🏷 等待网页标签返回"
         return "\n".join([line1, line2, line3])
+
+    @staticmethod
+    def _effective_item_tags(item) -> tuple[list[str], bool]:
+        if item.final_tags_locked:
+            return list(item.final_tags), len(item.final_tags) == 0
+        if item.final_tags:
+            return list(item.final_tags), False
+        return list(item.detected_tags), False
 
     def _pick_files(self) -> None:
         files, _ = QFileDialog.getOpenFileNames(self, "选择文件")
@@ -470,12 +480,13 @@ class MainWindow(QMainWindow):
                 f"status: {item.status.value}",
                 f"detected_tags ({len(item.detected_tags)}): {item.detected_tags}",
                 f"final_tags ({len(item.final_tags)}): {item.final_tags}",
+                f"final_tags_locked: {item.final_tags_locked}",
                 f"parent_post_id: {item.parent_post_id}",
                 f"created_post_id: {item.created_post_id}",
                 f"error: {item.error_message}",
             ]
             self.detail.setPlainText("\n".join(lines))
-            tag_source = item.final_tags or item.detected_tags
+            tag_source, _ = self._effective_item_tags(item)
             if tag_source:
                 self.tag_editor.setPlainText("\n".join(tag_source))
             return
