@@ -241,8 +241,9 @@ def test_upload_one_syncs_web_edited_tags_before_submit(monkeypatch) -> None:
     monkeypatch.setattr("sankaku_uploader.infrastructure.automation.wait_for_ai_tags", lambda *_args, **_kwargs: (["old-tag"], True))
     monkeypatch.setattr(client, "_review_decision", lambda *_: ReviewDecision("confirm"))
     monkeypatch.setattr(
-        "sankaku_uploader.infrastructure.automation._extract_tags_from_editor_section",
-        lambda _page: (["edited-tag", "edited-2"], False),
+        client,
+        "_sync_tags_after_review",
+        lambda _page, baseline_tags: ["edited-tag", "edited-2"],
     )
     monkeypatch.setattr(client, "_wait_for_submit", lambda _page: FakeLocator(page, "submit"))
     monkeypatch.setattr(client, "_wait_for_uploaded_post", lambda *_args, **_kwargs: ("https://www.sankakucomplex.com/posts/abc", "abc"))
@@ -263,8 +264,9 @@ def test_upload_one_syncs_manual_clear_to_empty_tags(monkeypatch) -> None:
     monkeypatch.setattr("sankaku_uploader.infrastructure.automation.wait_for_ai_tags", lambda *_args, **_kwargs: (["old-tag"], True))
     monkeypatch.setattr(client, "_review_decision", lambda *_: ReviewDecision("confirm"))
     monkeypatch.setattr(
-        "sankaku_uploader.infrastructure.automation._extract_tags_from_editor_section",
-        lambda _page: ([], False),
+        client,
+        "_sync_tags_after_review",
+        lambda _page, baseline_tags: [],
     )
     monkeypatch.setattr(client, "_wait_for_submit", lambda _page: FakeLocator(page, "submit"))
     monkeypatch.setattr(client, "_wait_for_uploaded_post", lambda *_args, **_kwargs: ("https://www.sankakucomplex.com/posts/abc", "abc"))
@@ -272,3 +274,27 @@ def test_upload_one_syncs_manual_clear_to_empty_tags(monkeypatch) -> None:
     result = client._upload_one(page, context, SimpleNamespace(item_id="i1", file_name="x.png", file_path="x.png"), parent_post_id="", known_post_ids=set())
     assert result.success is True
     assert result.ai_tags == []
+
+
+def test_sync_tags_after_review_waits_for_final_editor_state(monkeypatch) -> None:
+    client = _build_client()
+    states = [(["a", "b"], True), (["a"], False)]
+
+    def fake_extract(_page):
+        return states.pop(0)
+
+    monkeypatch.setattr("sankaku_uploader.infrastructure.automation._extract_tags_from_editor_section", fake_extract)
+    monkeypatch.setattr("sankaku_uploader.infrastructure.automation.time.sleep", lambda *_: None)
+    tags = client._sync_tags_after_review(object(), baseline_tags=["a", "b", "c"])
+    assert tags == ["a"]
+
+
+def test_sync_tags_after_review_returns_empty_when_editor_cleared(monkeypatch) -> None:
+    client = _build_client()
+    monkeypatch.setattr(
+        "sankaku_uploader.infrastructure.automation._extract_tags_from_editor_section",
+        lambda _page: ([], False),
+    )
+    monkeypatch.setattr("sankaku_uploader.infrastructure.automation.time.sleep", lambda *_: None)
+    tags = client._sync_tags_after_review(object(), baseline_tags=["a", "b"])
+    assert tags == []

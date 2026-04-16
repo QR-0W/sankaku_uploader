@@ -242,10 +242,10 @@ def _extract_tags_from_editor_section(page) -> tuple[list[str], bool]:
 
               const candidates = [];
               const chipLike = section.querySelectorAll(
-                ".MuiChip-label, .MuiAutocomplete-tag, [data-tag], [data-testid*='tag' i]"
+                ".MuiChip-root .MuiChip-label, .MuiChip-label, [class*='MuiChip-label'], .MuiAutocomplete-tag, [data-tag], [data-testid*='tag' i], [data-tag-index]"
               );
               for (const node of chipLike) {
-                const text = clean(node.textContent);
+                const text = clean(node.getAttribute("data-tag") || node.getAttribute("title") || node.textContent);
                 if (text) candidates.push(text);
               }
 
@@ -571,13 +571,9 @@ class SankakuAutomationClient:
                     f"{item.file_name}: applied tags override count={len(tags)} success={applied}"
                 )
             else:
-                edited_tags, tagging_in_progress = _extract_tags_from_editor_section(page)
-                if edited_tags:
-                    tags = edited_tags
-                    self._trace(f"{item.file_name}: synced edited tags count={len(tags)}")
-                elif not tagging_in_progress:
-                    tags = []
-                    self._trace(f"{item.file_name}: synced edited tags => empty (manual clear or none)")
+                synced_tags = self._sync_tags_after_review(page, baseline_tags=tags)
+                tags = synced_tags
+                self._trace(f"{item.file_name}: synced edited tags count={len(tags)}")
 
             submit = self._wait_for_submit(page)
             if submit is None:
@@ -1002,6 +998,21 @@ class SankakuAutomationClient:
             except Exception:
                 return False
         return True
+
+    def _sync_tags_after_review(self, page, *, baseline_tags: list[str]) -> list[str]:
+        deadline = time.monotonic() + 2.5
+        latest = list(baseline_tags)
+        while time.monotonic() < deadline:
+            edited_tags, tagging_in_progress = _extract_tags_from_editor_section(page)
+            if edited_tags:
+                latest = edited_tags
+                if not tagging_in_progress:
+                    return latest
+            else:
+                if not tagging_in_progress:
+                    return []
+            time.sleep(min(self.config.poll_interval_seconds, 0.2))
+        return latest
 
     @staticmethod
     def _clear_current_tags_from_editor(page) -> None:
