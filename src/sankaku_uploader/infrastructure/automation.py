@@ -119,6 +119,10 @@ def extract_post_id(url: str) -> str:
 
 
 def extract_ai_tags(page, selectors: Iterable[str] = AI_TAG_SELECTORS) -> list[str]:
+    dom_tags = _extract_ai_tags_from_dom(page, selectors)
+    if dom_tags:
+        return dom_tags
+
     for selector in selectors:
         try:
             locator = page.locator(selector)
@@ -127,10 +131,64 @@ def extract_ai_tags(page, selectors: Iterable[str] = AI_TAG_SELECTORS) -> list[s
             text = locator.first.text_content() or ""
         except Exception:
             continue
-        tags = [part.strip() for part in re.split(r"[\n,;]+", text) if part.strip()]
+        tags = _normalize_tags([part.strip() for part in re.split(r"[\n,;]+", text) if part.strip()])
         if tags:
             return tags
     return []
+
+
+def _extract_ai_tags_from_dom(page, selectors: Iterable[str]) -> list[str]:
+    selector_list = list(selectors)
+    try:
+        raw_tags = page.evaluate(
+            """
+            (selectors) => {
+              const clean = (text) =>
+                String(text || "")
+                  .replace(/\\s+/g, " ")
+                  .trim();
+
+              const tags = [];
+              for (const selector of selectors) {
+                const roots = Array.from(document.querySelectorAll(selector));
+                for (const root of roots) {
+                  const chips = root.querySelectorAll("a, button, span, li, .tag, [data-tag]");
+                  if (chips.length > 0) {
+                    for (const chip of chips) {
+                      const txt = clean(chip.textContent);
+                      if (txt) tags.push(txt);
+                    }
+                  } else {
+                    const txt = clean(root.textContent);
+                    if (txt) tags.push(...txt.split(/[\\n,;]+/g).map((x) => clean(x)));
+                  }
+                }
+              }
+              return tags.filter(Boolean);
+            }
+            """,
+            selector_list,
+        )
+    except Exception:
+        return []
+    if not isinstance(raw_tags, list):
+        return []
+    return _normalize_tags([str(x) for x in raw_tags if str(x).strip()])
+
+
+def _normalize_tags(values: Iterable[str]) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        tag = str(value).strip()
+        if not tag:
+            continue
+        key = tag.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(tag)
+    return normalized
 
 
 def wait_for_ai_tags(page, timeout_seconds: float, poll_interval_seconds: float) -> tuple[list[str], bool]:
@@ -205,8 +263,15 @@ class SankakuAutomationClient:
                             )
                         )
                         continue
+                    known_post_ids = self._collect_known_post_ids(context)
                     parent_post_id = root_post_id if diff_mode and idx > 0 else ""
-                    result = self._upload_one(page, item, parent_post_id=parent_post_id)
+                    result = self._upload_one(
+                        page,
+                        context,
+                        item,
+                        parent_post_id=parent_post_id,
+                        known_post_ids=known_post_ids,
+                    )
                     results.append(result)
                     if diff_mode and idx == 0 and result.post_id:
                         root_post_id = result.post_id
@@ -217,7 +282,7 @@ class SankakuAutomationClient:
                 context.close()
         return results
 
-    def _upload_one(self, page, item: UploadItem, *, parent_post_id: str) -> AutomationUploadResult:
+    def _upload_one(self, page, context, item: UploadItem, *, parent_post_id: str, known_post_ids: set[str]) -> AutomationUploadResult:
         try:
             self._dismiss_common_overlays(page)
             selected_by = self._select_file(page, Path(item.file_path))
@@ -237,7 +302,11 @@ class SankakuAutomationClient:
             )
 
             if self.config.run_mode == "manual_assist":
-                uploaded_url, post_id = self._wait_for_uploaded_post(page)
+                uploaded_url, post_id = self._wait_for_uploaded_post(
+                    page,
+                    context=context,
+                    ignore_post_ids=known_post_ids,
+                )
                 if not post_id:
                     return AutomationUploadResult(
                         item_id=item.item_id,
@@ -270,7 +339,12 @@ class SankakuAutomationClient:
                 page.wait_for_load_state("networkidle", timeout=10_000)
             except PlaywrightTimeoutError:
                 pass
-            uploaded_url, post_id = self._wait_for_uploaded_post(page, timeout_seconds=15.0)
+            uploaded_url, post_id = self._wait_for_uploaded_post(
+                page,
+                context=context,
+                timeout_seconds=15.0,
+                ignore_post_ids=known_post_ids,
+            )
             if not post_id:
                 tag_fix = self._try_apply_minimum_tag(page, tags)
                 if tag_fix:
@@ -281,7 +355,12 @@ class SankakuAutomationClient:
                             page.wait_for_load_state("networkidle", timeout=10_000)
                         except PlaywrightTimeoutError:
                             pass
-                        uploaded_url, post_id = self._wait_for_uploaded_post(page, timeout_seconds=15.0)
+                        uploaded_url, post_id = self._wait_for_uploaded_post(
+                            page,
+                            context=context,
+                            timeout_seconds=15.0,
+                            ignore_post_ids=known_post_ids,
+                        )
                 if not post_id:
                     return AutomationUploadResult(
                         item_id=item.item_id,
@@ -404,17 +483,61 @@ class SankakuAutomationClient:
             time.sleep(self.config.poll_interval_seconds)
         return None
 
-    def _wait_for_uploaded_post(self, page, timeout_seconds: float | None = None) -> tuple[str, str]:
+    def _wait_for_uploaded_post(
+        self,
+        page,
+        *,
+        context=None,
+        timeout_seconds: float | None = None,
+        ignore_post_ids: set[str] | None = None,
+    ) -> tuple[str, str]:
         timeout = self.config.confirmation_timeout_seconds if timeout_seconds is None else timeout_seconds
         deadline = time.monotonic() + timeout
+        ignore = ignore_post_ids or set()
         last_url = self._safe_url(page)
         while time.monotonic() < deadline:
             last_url = self._safe_url(page)
             post_id = extract_post_id(last_url)
-            if post_id:
+            if post_id and post_id not in ignore:
                 return last_url, post_id
+            if context is not None:
+                ctx_url, ctx_post_id = self._find_post_in_context(context, ignore_post_ids=ignore)
+                if ctx_post_id:
+                    return ctx_url, ctx_post_id
             time.sleep(self.config.poll_interval_seconds)
         return last_url, ""
+
+    @staticmethod
+    def _collect_known_post_ids(context) -> set[str]:
+        post_ids: set[str] = set()
+        try:
+            pages = list(context.pages)
+        except Exception:
+            return post_ids
+        for candidate in pages:
+            try:
+                post_id = extract_post_id(str(candidate.url))
+            except Exception:
+                continue
+            if post_id:
+                post_ids.add(post_id)
+        return post_ids
+
+    @staticmethod
+    def _find_post_in_context(context, *, ignore_post_ids: set[str]) -> tuple[str, str]:
+        try:
+            pages = list(context.pages)
+        except Exception:
+            return "", ""
+        for candidate in reversed(pages):
+            try:
+                url = str(candidate.url)
+            except Exception:
+                continue
+            post_id = extract_post_id(url)
+            if post_id and post_id not in ignore_post_ids:
+                return url, post_id
+        return "", ""
 
     def _review_decision(self, item: UploadItem, tags: list[str], available: bool) -> TagDecision:
         if self.review_decision_provider is None:

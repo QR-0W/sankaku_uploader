@@ -18,7 +18,8 @@ def test_repository_round_trip_tasks_and_settings(tmp_path: Path) -> None:
     assert loaded[0].task_name == "task"
     assert loaded[0].items[0].file_name == "a.png"
 
-    settings = Settings(upload_page_url="https://example.com/upload")
+    settings = Settings(upload_page_url="https://example.com/upload", headless=False)
     repo.save_settings(settings)
     loaded_settings = repo.load_settings()
     assert loaded_settings.upload_page_url == "https://example.com/upload"
+    assert loaded_settings.headless is False

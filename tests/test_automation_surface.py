@@ -34,11 +34,12 @@ class FakeLocator:
 
 
 class FakePage:
-    def __init__(self, counts: dict[str, int]):
+    def __init__(self, counts: dict[str, int], url: str = "https://example.com/upload"):
         self.counts = counts
         self.clicks: list[str] = []
         self.fills: list[tuple[str, str]] = []
         self.presses: list[tuple[str, str]] = []
+        self.url = url
 
     def locator(self, selector: str):
         normalized = selector
@@ -46,6 +47,11 @@ class FakePage:
             # not needed for these tests
             return FakeLocator(self, selector)
         return FakeLocator(self, normalized)
+
+
+class FakeContext:
+    def __init__(self, pages):
+        self.pages = pages
 
 
 def _build_client() -> SankakuAutomationClient:
@@ -112,3 +118,36 @@ def test_try_apply_minimum_tag_uses_autocomplete(monkeypatch) -> None:
     assert ok is True
     assert ("#autocomplete", "multiple_views") in page.fills
     assert ("#autocomplete", "Enter") in page.presses
+
+
+def test_wait_for_uploaded_post_reads_new_tab_post_url() -> None:
+    page = FakePage({}, url="https://www.sankakucomplex.com/zh-CN/posts/upload")
+    context = FakeContext(
+        [
+            FakePage({}, url="https://www.sankakucomplex.com/zh-CN/posts/upload"),
+            FakePage({}, url="https://www.sankakucomplex.com/zh-CN/posts/abc123"),
+        ]
+    )
+    client = _build_client()
+    url, post_id = client._wait_for_uploaded_post(
+        page,
+        context=context,
+        timeout_seconds=0.01,
+        ignore_post_ids=set(),
+    )
+    assert post_id == "abc123"
+    assert "abc123" in url
+
+
+def test_wait_for_uploaded_post_ignores_known_ids() -> None:
+    page = FakePage({}, url="https://www.sankakucomplex.com/zh-CN/posts/upload")
+    context = FakeContext([FakePage({}, url="https://www.sankakucomplex.com/zh-CN/posts/known1")])
+    client = _build_client()
+    url, post_id = client._wait_for_uploaded_post(
+        page,
+        context=context,
+        timeout_seconds=0.01,
+        ignore_post_ids={"known1"},
+    )
+    assert post_id == ""
+    assert "upload" in url

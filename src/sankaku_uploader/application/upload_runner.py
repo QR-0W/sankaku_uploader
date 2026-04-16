@@ -62,14 +62,17 @@ def _run_upload_task(task_payload: dict[str, Any], settings_payload: dict[str, A
 
     emit("task_started", {"task_id": task.task_id, "task_name": task.task_name, "task_type": task.task_type.value})
 
+    needs_manual_review = settings.review_mode.value == "manual_review"
+
     client = SankakuAutomationClient(
         AutomationConfig(
             upload_url=settings.upload_page_url,
             profile_dir=Path(settings.profile_dir),
             browser_channel=settings.browser_channel,
-            run_mode="manual_assist" if settings.review_mode.value == "manual_review" else "auto_submit",
+            headless=settings.headless,
+            run_mode="auto_submit",
         ),
-        review_decision_provider=review_provider,
+        review_decision_provider=review_provider if needs_manual_review else None,
     )
 
     pending_items = task.pending_items()

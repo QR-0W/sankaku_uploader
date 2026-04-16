@@ -297,6 +297,7 @@ class Settings:
     review_mode: ReviewMode = ReviewMode.MANUAL_REVIEW
     browser_channel: str = "msedge"
     profile_dir: str = str(Path.home() / ".sankaku-uploader" / "profile")
+    headless: bool = True
     ui_preferences: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -309,6 +310,7 @@ class Settings:
             "review_mode": self.review_mode.value,
             "browser_channel": self.browser_channel,
             "profile_dir": self.profile_dir,
+            "headless": self.headless,
             "ui_preferences": self.ui_preferences,
         }
 
@@ -323,5 +325,6 @@ class Settings:
             review_mode=ReviewMode(str(data.get("review_mode") or ReviewMode.MANUAL_REVIEW.value)),
             browser_channel=str(data.get("browser_channel") or "msedge"),
             profile_dir=str(data.get("profile_dir") or str(Path.home() / ".sankaku-uploader" / "profile")),
+            headless=bool(data.get("headless", True)),
             ui_preferences=dict(data.get("ui_preferences") or {}),
         )

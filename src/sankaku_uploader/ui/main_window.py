@@ -1,11 +1,13 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 from typing import Iterable
 
 from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QFormLayout,
@@ -27,6 +29,68 @@ from PySide6.QtWidgets import (
 from sankaku_uploader.application import TaskService, UploadRunnerController
 from sankaku_uploader.domain import ItemStatus, ReviewMode, Settings, TaskStatus, TaskType, UploadTask
 from sankaku_uploader.infrastructure.storage import JsonRepository
+
+
+_TELEGRAM_STYLE = """
+QMainWindow, QWidget {
+  background: #18222d;
+  color: #eaf2ff;
+  font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+  font-size: 13px;
+}
+QLabel {
+  color: #d8e7ff;
+}
+QLineEdit, QComboBox, QListWidget, QPlainTextEdit {
+  background: #22303d;
+  border: 1px solid #2d4052;
+  border-radius: 10px;
+  color: #f2f7ff;
+  padding: 6px 8px;
+}
+QListWidget::item {
+  border-radius: 8px;
+  padding: 8px;
+  margin: 2px 0;
+}
+QListWidget::item:selected {
+  background: #2f8ef9;
+  color: #ffffff;
+}
+QPushButton {
+  background: #2f8ef9;
+  color: #ffffff;
+  border: none;
+  border-radius: 10px;
+  padding: 8px 12px;
+  font-weight: 600;
+}
+QPushButton:hover {
+  background: #4aa0ff;
+}
+QPushButton:disabled {
+  background: #304356;
+  color: #99a9bc;
+}
+QSplitter::handle {
+  background: #253646;
+  width: 1px;
+}
+QCheckBox {
+  spacing: 8px;
+}
+QCheckBox::indicator {
+  width: 16px;
+  height: 16px;
+  border-radius: 8px;
+  border: 1px solid #4f6780;
+  background: #22303d;
+}
+QCheckBox::indicator:checked {
+  background: #2f8ef9;
+  border: 1px solid #2f8ef9;
+}
+"""
 
 
 class TaskQueueListWidget(QListWidget):
@@ -63,8 +127,8 @@ class TaskQueueListWidget(QListWidget):
     def current_item_ids(self) -> list[str]:
         item_ids: list[str] = []
         for row in range(self.count()):
-            list_item = self.item(row)
-            item_id = list_item.data(Qt.ItemDataRole.UserRole)
+            item = self.item(row)
+            item_id = item.data(Qt.ItemDataRole.UserRole)
             if item_id:
                 item_ids.append(str(item_id))
         return item_ids
@@ -73,8 +137,8 @@ class TaskQueueListWidget(QListWidget):
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Sankaku Uploader V2")
-        self.resize(1380, 840)
+        self.setWindowTitle("Sankaku Uploader")
+        self.resize(1420, 860)
 
         self.repository = JsonRepository()
         self.service = TaskService(self.repository)
@@ -85,6 +149,7 @@ class MainWindow(QMainWindow):
         self.pending_review_item_id: str | None = None
 
         self._build_ui()
+        self._apply_theme()
         self._load_settings_to_ui()
         self._refresh_task_list()
 
@@ -96,11 +161,14 @@ class MainWindow(QMainWindow):
         root = QWidget(self)
         self.setCentralWidget(root)
         layout = QVBoxLayout(root)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
 
-        # Settings row
         settings_row = QHBoxLayout()
         layout.addLayout(settings_row)
         form = QFormLayout()
+        form.setFormAlignment(Qt.AlignmentFlag.AlignLeft)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         settings_row.addLayout(form, 2)
 
         self.upload_url_edit = QLineEdit()
@@ -109,23 +177,24 @@ class MainWindow(QMainWindow):
         self.review_mode_combo = QComboBox()
         self.review_mode_combo.addItem("人工审核", ReviewMode.MANUAL_REVIEW.value)
         self.review_mode_combo.addItem("快速通过", ReviewMode.QUICK_PASS.value)
+        self.headless_check = QCheckBox("后台运行（不弹浏览器）")
 
         form.addRow("上传页 URL", self.upload_url_edit)
-        form.addRow("浏览器配置目录", self.profile_dir_edit)
+        form.addRow("浏览器 Profile", self.profile_dir_edit)
         form.addRow("浏览器通道", self.browser_channel_edit)
-        form.addRow("标签模式", self.review_mode_combo)
+        form.addRow("标签审核模式", self.review_mode_combo)
+        form.addRow("运行方式", self.headless_check)
 
         self.save_settings_button = QPushButton("保存设置")
         self.save_settings_button.clicked.connect(self._save_settings_from_ui)
-        settings_row.addWidget(self.save_settings_button, 0)
+        settings_row.addWidget(self.save_settings_button)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         layout.addWidget(splitter, 1)
 
-        # Left: task list
         left = QWidget()
         left_layout = QVBoxLayout(left)
-        left_layout.addWidget(QLabel("任务列表"))
+        left_layout.addWidget(QLabel("任务"))
         self.task_list = QListWidget()
         self.task_list.currentItemChanged.connect(self._on_task_selected)
         left_layout.addWidget(self.task_list, 1)
@@ -142,10 +211,9 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self.delete_task_button)
         splitter.addWidget(left)
 
-        # Center: queue
         center = QWidget()
         center_layout = QVBoxLayout(center)
-        center_layout.addWidget(QLabel("文件队列"))
+        center_layout.addWidget(QLabel("上传队列（每条下方展示解析后的 Tag）"))
         self.queue_list = TaskQueueListWidget(self._add_paths_to_active_task, self._persist_reorder)
         self.queue_list.currentItemChanged.connect(self._show_item_detail)
         center_layout.addWidget(self.queue_list, 1)
@@ -181,10 +249,9 @@ class MainWindow(QMainWindow):
         center_layout.addLayout(run_btn_row)
         splitter.addWidget(center)
 
-        # Right: detail + logs
         right = QWidget()
         right_layout = QVBoxLayout(right)
-        right_layout.addWidget(QLabel("当前项详情"))
+        right_layout.addWidget(QLabel("当前文件详情"))
         self.detail = QPlainTextEdit()
         self.detail.setReadOnly(True)
         right_layout.addWidget(self.detail, 1)
@@ -205,11 +272,15 @@ class MainWindow(QMainWindow):
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
         right_layout.addWidget(self.log, 1)
-
         splitter.addWidget(right)
-        splitter.setSizes([260, 640, 480])
 
+        splitter.setSizes([280, 760, 430])
         self._set_review_buttons_enabled(False)
+
+    def _apply_theme(self) -> None:
+        self.setStyleSheet(_TELEGRAM_STYLE)
+        app_font = QFont("Segoe UI", 10)
+        self.setFont(app_font)
 
     def _append_log(self, message: str) -> None:
         self.log.appendPlainText(message)
@@ -218,6 +289,7 @@ class MainWindow(QMainWindow):
         self.upload_url_edit.setText(self.settings.upload_page_url)
         self.profile_dir_edit.setText(self.settings.profile_dir)
         self.browser_channel_edit.setText(self.settings.browser_channel)
+        self.headless_check.setChecked(self.settings.headless)
         for i in range(self.review_mode_combo.count()):
             if self.review_mode_combo.itemData(i) == self.settings.review_mode.value:
                 self.review_mode_combo.setCurrentIndex(i)
@@ -228,21 +300,23 @@ class MainWindow(QMainWindow):
         self.settings.profile_dir = self.profile_dir_edit.text().strip() or self.settings.profile_dir
         self.settings.browser_channel = self.browser_channel_edit.text().strip() or self.settings.browser_channel
         self.settings.review_mode = ReviewMode(str(self.review_mode_combo.currentData()))
+        self.settings.headless = self.headless_check.isChecked()
         self.repository.save_settings(self.settings)
         self._append_log("设置已保存")
 
     def _refresh_task_list(self) -> None:
         self.task_list.clear()
         for task in self.service.list_tasks():
-            item = QListWidgetItem(f"[{task.status.value}] {task.task_name} ({task.task_type.value})")
+            text = f"[{task.status.value}] {task.task_name} ({task.task_type.value})"
+            item = QListWidgetItem(text)
             item.setData(Qt.ItemDataRole.UserRole, task.task_id)
             self.task_list.addItem(item)
 
         if self.active_task_id:
             for row in range(self.task_list.count()):
-                list_item = self.task_list.item(row)
-                if list_item.data(Qt.ItemDataRole.UserRole) == self.active_task_id:
-                    self.task_list.setCurrentItem(list_item)
+                item = self.task_list.item(row)
+                if item.data(Qt.ItemDataRole.UserRole) == self.active_task_id:
+                    self.task_list.setCurrentItem(item)
                     return
 
         if self.task_list.count() > 0:
@@ -292,15 +366,30 @@ class MainWindow(QMainWindow):
             return
 
         for item in sorted(task.items, key=lambda x: x.order_index):
-            prefix = "[主]" if task.task_type is TaskType.DIFF_GROUP and item.order_index == 0 else "[子]" if task.task_type is TaskType.DIFF_GROUP else "[项]"
-            label = f"{prefix} {item.order_index + 1:03d} | {item.file_name} | {item.file_type.value} | {item.status.value}"
-            if item.parent_post_id:
-                label += f" | parent={item.parent_post_id}"
-            if item.created_post_id:
-                label += f" | post={item.created_post_id}"
-            list_item = QListWidgetItem(label)
+            row_text = self._build_item_row_text(task, item)
+            list_item = QListWidgetItem(row_text)
             list_item.setData(Qt.ItemDataRole.UserRole, item.item_id)
             self.queue_list.addItem(list_item)
+
+    def _build_item_row_text(self, task: UploadTask, item) -> str:
+        if task.task_type is TaskType.DIFF_GROUP:
+            role = "ROOT" if item.order_index == 0 else "CHILD"
+        else:
+            role = "ITEM"
+
+        line1 = f"[{role}] #{item.order_index + 1:03d}  {item.file_name}"
+        line2 = (
+            f"状态: {item.status.value}   类型: {item.file_type.value}   "
+            f"post: {item.created_post_id or '-'}   parent: {item.parent_post_id or '-'}"
+        )
+        tags = item.final_tags or item.detected_tags
+        if tags:
+            preview = tags[:10]
+            suffix = " …" if len(tags) > 10 else ""
+            line3 = "🏷 " + "  ·  ".join(preview) + suffix
+        else:
+            line3 = "🏷 等待网页标签返回"
+        return "\n".join([line1, line2, line3])
 
     def _pick_files(self) -> None:
         files, _ = QFileDialog.getOpenFileNames(self, "选择文件")
@@ -319,10 +408,10 @@ class MainWindow(QMainWindow):
         if task is None:
             QMessageBox.warning(self, "提示", "请先创建或选择任务")
             return
-        paths = list(paths)
-        self.service.add_files(task.task_id, paths)
+        path_list = list(paths)
+        self.service.add_files(task.task_id, path_list)
         self._render_active_task()
-        self._append_log(f"添加 {len(paths)} 个文件到任务 {task.task_name}")
+        self._append_log(f"添加 {len(path_list)} 个文件到任务 {task.task_name}")
 
     def _persist_reorder(self) -> None:
         task = self._active_task()
@@ -363,8 +452,8 @@ class MainWindow(QMainWindow):
                 f"item_id: {item.item_id}",
                 f"file: {item.file_path}",
                 f"status: {item.status.value}",
-                f"detected_tags: {item.detected_tags}",
-                f"final_tags: {item.final_tags}",
+                f"detected_tags ({len(item.detected_tags)}): {item.detected_tags}",
+                f"final_tags ({len(item.final_tags)}): {item.final_tags}",
                 f"parent_post_id: {item.parent_post_id}",
                 f"created_post_id: {item.created_post_id}",
                 f"error: {item.error_message}",
@@ -492,7 +581,7 @@ class MainWindow(QMainWindow):
             post_id=post_id,
             error=error,
         )
-        detail = f"结果: item={item_id} success={success} post_id={post_id}"
+        detail = f"结果: item={item_id} success={success} post_id={post_id or '-'}"
         if error:
             detail += f" error={error}"
         self._append_log(detail)
