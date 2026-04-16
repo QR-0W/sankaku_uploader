@@ -47,9 +47,11 @@ class FakePage:
 
 
 def test_extract_post_id() -> None:
-    assert extract_post_id("https://www.sankakucomplex.com/posts/123") == "123"
+    assert extract_post_id("https://www.sankakucomplex.com/posts/1234567") == "1234567"
     assert extract_post_id("https://www.sankakucomplex.com/zh-CN/posts/WKaoQdVKKRJ") == "WKaoQdVKKRJ"
     assert extract_post_id("https://www.sankakucomplex.com/zh-CN/posts/upload") == ""
+    assert extract_post_id("https://www.sankakucomplex.com/posts/keyset") == ""
+    assert extract_post_id("") == ""
 
 
 def test_extract_ai_tags() -> None:

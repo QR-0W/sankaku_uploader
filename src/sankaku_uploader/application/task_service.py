@@ -114,6 +114,11 @@ class TaskService:
                 self._save()
                 return
 
+    def set_manual_root_post_id(self, task_id: str, post_id: str) -> None:
+        task = self.get_task(task_id)
+        task.manual_root_post_id = post_id.strip()
+        self._save()
+
     def retry_failed_items(self, task_id: str) -> int:
         task = self.get_task(task_id)
         count = 0

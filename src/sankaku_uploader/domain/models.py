@@ -152,6 +152,7 @@ class UploadTask:
     task_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     status: TaskStatus = TaskStatus.PENDING
     root_post_id: str = ""
+    manual_root_post_id: str = ""  # user-supplied parent post ID for diff mode
     items: list[UploadItem] = field(default_factory=list)
     runtime: TaskRuntimeState | None = None
     created_at: str = field(default_factory=utc_now_iso)
@@ -266,6 +267,7 @@ class UploadTask:
             "task_type": self.task_type.value,
             "status": self.status.value,
             "root_post_id": self.root_post_id,
+            "manual_root_post_id": self.manual_root_post_id,
             "items": [item.to_dict() for item in self.items],
             "runtime": self.runtime.to_dict() if self.runtime else None,
             "created_at": self.created_at,
@@ -280,6 +282,7 @@ class UploadTask:
             task_type=TaskType(str(data.get("task_type") or TaskType.NORMAL_BATCH.value)),
             status=TaskStatus(str(data.get("status") or TaskStatus.PENDING.value)),
             root_post_id=str(data.get("root_post_id") or ""),
+            manual_root_post_id=str(data.get("manual_root_post_id") or ""),
             items=[UploadItem.from_dict(item) for item in data.get("items") or []],
             runtime=TaskRuntimeState.from_dict(data["runtime"]) if data.get("runtime") else None,
             created_at=str(data.get("created_at") or utc_now_iso()),
@@ -293,7 +296,7 @@ class UploadTask:
 @dataclass(slots=True)
 class Settings:
     site_url: str = "https://www.sankakucomplex.com"
-    upload_page_url: str = "https://www.sankakucomplex.com/zh-CN/posts/upload"
+    upload_page_url: str = "https://www.sankakucomplex.com/en/posts/upload"
     default_task_mode: TaskType = TaskType.NORMAL_BATCH
     retry_count: int = 1
     auto_save_interval: int = 10

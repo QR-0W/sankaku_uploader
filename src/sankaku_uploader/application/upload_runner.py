@@ -81,28 +81,32 @@ def _run_upload_task(task_payload: dict[str, Any], settings_payload: dict[str, A
                 break
             commands_to_scan.append(WorkerEvent.from_json(raw))
 
-        for command in commands_to_scan:
+        while commands_to_scan:
+            command = commands_to_scan.pop(0)
             if command.payload.get("item_id") != item.item_id:
                 command_backlog.append(command)
                 continue
+
             if command.kind == "tag_sync":
                 payload_tags = command.payload.get("tags")
                 if isinstance(payload_tags, list):
                     tags_override = [str(tag).strip() for tag in payload_tags if str(tag).strip()]
                 else:
                     tags_override = []
+                command_backlog.extend(commands_to_scan)
                 return ReviewDecision(action="sync", tags_override=tags_override)
-            if command.kind != "decision":
-                continue
-            action = str(command.payload.get("action") or "").strip().lower()
-            if action in {"confirm", "skip", "retry"}:
-                tags_override = None
-                payload_tags = command.payload.get("tags_override")
-                if isinstance(payload_tags, list):
-                    tags_override = [str(tag).strip() for tag in payload_tags if str(tag).strip()]
-                    if action == "confirm" and command.payload.get("tags_override_allow_empty", False) and not payload_tags:
-                        tags_override = []
-                return ReviewDecision(action=action, tags_override=tags_override)
+
+            if command.kind == "decision":
+                action = str(command.payload.get("action") or "").strip().lower()
+                if action in {"confirm", "skip", "retry"}:
+                    tags_override = None
+                    payload_tags = command.payload.get("tags_override")
+                    if isinstance(payload_tags, list):
+                        tags_override = [str(tag).strip() for tag in payload_tags if str(tag).strip()]
+                        if action == "confirm" and command.payload.get("tags_override_allow_empty", False) and not payload_tags:
+                            tags_override = []
+                    command_backlog.extend(commands_to_scan)
+                    return ReviewDecision(action=action, tags_override=tags_override)
         return None
 
     emit("task_started", {"task_id": task.task_id, "task_name": task.task_name, "task_type": task.task_type.value})
@@ -115,7 +119,7 @@ def _run_upload_task(task_payload: dict[str, Any], settings_payload: dict[str, A
 
     client = SankakuAutomationClient(
         AutomationConfig(
-            upload_url=settings.upload_page_url,
+            upload_url=settings.upload_page_url.replace("/zh-CN/", "/en/"),
             profile_dir=Path(settings.profile_dir),
             browser_channel=settings.browser_channel,
             headless=settings.headless,
@@ -143,7 +147,11 @@ def _run_upload_task(task_payload: dict[str, Any], settings_payload: dict[str, A
             },
         )
 
-    results = client.upload_items(pending_items, diff_mode=task.task_type is TaskType.DIFF_GROUP)
+    results = client.upload_items(
+        pending_items,
+        diff_mode=task.task_type is TaskType.DIFF_GROUP,
+        manual_root_post_id=task.manual_root_post_id,
+    )
 
     has_failures = False
     for result in results:

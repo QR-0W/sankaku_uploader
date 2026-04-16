@@ -136,7 +136,17 @@ def extract_post_id(url: str) -> str:
     if not matched:
         return ""
     post_id = matched.group(1)
-    if post_id.lower() in {"upload", "create"}:
+    # Block known UI route segments that are not real post IDs
+    _BLOCKED_URL_SEGMENTS = {
+        "upload", "create", "keyset", "new", "edit",
+        "index", "search", "random", "settings", "help",
+        "popular", "hot", "recommended",
+    }
+    if post_id.lower() in _BLOCKED_URL_SEGMENTS:
+        return ""
+    # Real post IDs are typically 8-24 alphanumeric characters.
+    # Reject anything with a hyphen/underscore or outside that range.
+    if not re.fullmatch(r"[A-Za-z0-9]{5,32}", post_id):
         return ""
     return post_id
 
@@ -437,7 +447,9 @@ class SankakuAutomationClient:
         except Exception:
             return
 
-    def upload_items(self, items: list[UploadItem], *, diff_mode: bool = False) -> list[AutomationUploadResult]:
+    def upload_items(
+        self, items: list[UploadItem], *, diff_mode: bool = False, manual_root_post_id: str = ""
+    ) -> list[AutomationUploadResult]:
         results: list[AutomationUploadResult] = []
         self.config.profile_dir.mkdir(parents=True, exist_ok=True)
         if self.config.debug_dir is not None:
@@ -463,7 +475,11 @@ class SankakuAutomationClient:
 
                 page = self._select_working_page(context)
                 self._close_extra_pages(context, keep_page=page)
-                root_post_id = ""
+                # Use the user-supplied root post id if provided; otherwise derive
+                # it from the first uploaded item in the batch.
+                root_post_id = manual_root_post_id.strip()
+                if root_post_id:
+                    self._trace(f"diff mode: using manual root_post_id={root_post_id}")
                 for idx, item in enumerate(items):
                     self._trace(f"[{idx+1}/{len(items)}] open upload page for item={item.file_name} item_id={item.item_id}")
                     page.goto(self.config.upload_url, wait_until="domcontentloaded")
@@ -492,9 +508,11 @@ class SankakuAutomationClient:
                         known_post_ids=known_post_ids,
                     )
                     results.append(result)
-                    if diff_mode and idx == 0 and result.post_id:
+                    if diff_mode and not root_post_id and idx == 0 and result.post_id:
                         root_post_id = result.post_id
-                        self._trace(f"root post id established: {root_post_id}")
+                        self._trace(f"root post id established from upload: {root_post_id}")
+                    elif diff_mode and manual_root_post_id and idx == 0 and result.post_id:
+                        self._trace(f"root post id (manual override active): {root_post_id}")
                     if diff_mode and idx > 0 and not root_post_id:
                         result.success = False
                         result.error = "root post id missing in diff mode"
@@ -923,14 +941,22 @@ class SankakuAutomationClient:
                 continue
 
     def _ensure_advanced_panel_open(self, page) -> None:
-        parent_input = find_first_locator(page, PARENT_ID_SELECTORS)
-        if parent_input is not None:
-            return
+        # Check whether the parent input is already visible (panel open)
+        for selector in PARENT_ID_SELECTORS:
+            try:
+                loc = page.locator(selector)
+                if loc.count() > 0 and loc.first.is_visible():
+                    return
+            except Exception:
+                continue
+        # Panel is closed — click the Advanced button to open it
         advanced = find_button_by_text(page, ("advanced", "高级", "高级选项"))
         if advanced is None:
             return
         try:
             advanced.click()
+            # Give the panel time to animate open
+            time.sleep(0.4)
         except Exception:
             return
 
@@ -1214,6 +1240,18 @@ class SankakuAutomationClient:
             "thumbnail",
             "images",
             "preview",
+            "keyset",
+            "upload",
+            "create",
+            "new",
+            "edit",
+            "index",
+            "search",
+            "random",
+            "settings",
+            "help",
+            "popular",
+            "hot",
         }
         for value in values:
             post_id = str(value).strip()

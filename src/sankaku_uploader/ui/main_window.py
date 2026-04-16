@@ -256,6 +256,20 @@ class MainWindow(QMainWindow):
         run_btn_row.addWidget(self.resume_button)
         run_btn_row.addWidget(self.retry_button)
         center_layout.addLayout(run_btn_row)
+
+        # Diff mode root post ID override (only visible when diff task is active)
+        self.diff_parent_row = QHBoxLayout()
+        self.diff_parent_label = QLabel("差分模式 父贴子ID")
+        self.diff_parent_edit = QLineEdit()
+        self.diff_parent_edit.setPlaceholderText("留空则由程序自动获取第一张上传的帖子 ID")
+        self.diff_parent_save_btn = QPushButton("设置")
+        self.diff_parent_save_btn.clicked.connect(self._save_diff_parent_post_id)
+        self.diff_parent_row.addWidget(self.diff_parent_label)
+        self.diff_parent_row.addWidget(self.diff_parent_edit, 1)
+        self.diff_parent_row.addWidget(self.diff_parent_save_btn)
+        center_layout.addLayout(self.diff_parent_row)
+        self._set_diff_parent_row_visible(False)
+
         splitter.addWidget(center)
 
         right = QWidget()
@@ -363,7 +377,28 @@ class MainWindow(QMainWindow):
         if current is None:
             return
         self.active_task_id = str(current.data(Qt.ItemDataRole.UserRole))
+        task = self._active_task()
+        is_diff = task is not None and task.task_type is TaskType.DIFF_GROUP
+        self._set_diff_parent_row_visible(is_diff)
+        if is_diff and task is not None:
+            blocker = QSignalBlocker(self.diff_parent_edit)
+            self.diff_parent_edit.setText(task.manual_root_post_id)
+            del blocker
         self._render_active_task()
+
+    def _set_diff_parent_row_visible(self, visible: bool) -> None:
+        self.diff_parent_label.setVisible(visible)
+        self.diff_parent_edit.setVisible(visible)
+        self.diff_parent_save_btn.setVisible(visible)
+
+    def _save_diff_parent_post_id(self) -> None:
+        task = self._active_task()
+        if task is None:
+            return
+        post_id = self.diff_parent_edit.text().strip()
+        self.service.set_manual_root_post_id(task.task_id, post_id)
+        self._append_log(f"差分父帖子 ID 已设置：{post_id or '(空 — 程序自动获取)'}"
+        )
 
     def _active_task(self) -> UploadTask | None:
         if not self.active_task_id:

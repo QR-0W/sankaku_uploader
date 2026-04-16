@@ -1,4 +1,4 @@
-﻿from multiprocessing import Queue
+from multiprocessing import Queue
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -23,7 +23,7 @@ def test_run_upload_task_uses_auto_submit_and_headless(monkeypatch, tmp_path: Pa
             captured["provider"] = review_decision_provider
             captured["trace_hook"] = trace_hook
 
-        def upload_items(self, items, *, diff_mode=False):
+        def upload_items(self, items, *, diff_mode=False, manual_root_post_id=""):
             return [
                 SimpleNamespace(
                     item_id=item.item_id,
@@ -69,7 +69,7 @@ def test_run_upload_task_manual_review_keeps_provider(monkeypatch, tmp_path: Pat
             captured["provider"] = review_decision_provider
             captured["trace_hook"] = trace_hook
 
-        def upload_items(self, items, *, diff_mode=False):
+        def upload_items(self, items, *, diff_mode=False, manual_root_post_id=""):
             return [
                 SimpleNamespace(
                     item_id=item.item_id,
@@ -121,7 +121,7 @@ def test_manual_review_provider_preserves_commands_for_other_items(monkeypatch, 
         def __init__(self, config, review_decision_provider=None, trace_hook=None):
             self.review_decision_provider = review_decision_provider
 
-        def upload_items(self, items, *, diff_mode=False):
+        def upload_items(self, items, *, diff_mode=False, manual_root_post_id=""):
             first = self.review_decision_provider(items[0], ["first"], True)
             second = self.review_decision_provider(items[1], ["second"], True)
             decisions.append((items[0].item_id, None if first is None else first.action))
