@@ -41,10 +41,6 @@
 
 ---
 
-## 🚥 快速开始
-
-本项目针对 Windows 用户提供了“开箱即用”的引导程序，无需手动创建虚拟环境。
-
 ### 1. 极速启动 (Windows)
 
 1. **克隆仓库**：
@@ -52,25 +48,23 @@
    git clone https://github.com/QR-0W/sankaku_auto_uploader.git
    cd sankaku_auto_uploader
    ```
-2. **运行启动器**：
+2. **启动程序**：
    双击 **`launcher.exe`**。
-   - 首次运行时，它会自动创建虚拟环境（`.venv`）、安装所有依赖库以及 Playwright 浏览器引擎。
-   - 配置完成后，程序将自动启动。
+   - 程序会自动检测环境，并完成所有必要的配置（如下载 Python、同步依赖库、安装浏览器引擎）。
+   - 一切就绪后，应用将自动开启。
+
+> [!TIP]
+> **遇到环境问题？**
+> 如果安装过程中断或环境损坏，你可以通过命令行运行 `launcher.exe --rebuild` 来强制重置并重新安装环境。
 
 ### 2. 手动安装 (通用)
 
-如果你由于环境限制无法运行启动器，可以进入 `scripts/` 文件夹手动执行安装脚本：
+如果你不使用启动器，可以完全手动执配置：
 
 ```bash
-# Windows
-.\scripts\start.bat
-
-# Linux/macOS
-chmod +x ./scripts/start.sh
-./scripts/start.sh
+# 安装 uv (推荐) 并运行
+uv run sankaku-uploader
 ```
-
-或者完全手动执配置：
 
 ```bash
 # 创建并激活虚拟环境
