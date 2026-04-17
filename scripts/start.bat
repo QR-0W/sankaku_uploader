@@ -1,57 +1,53 @@
 @echo off
 setlocal
 
-:: Always operate relative to the project root
+:: Move to project root
 cd /d "%~dp0.."
-set VENV_PATH=.venv
-set APP_EXE=%VENV_PATH%\Scripts\sankaku-uploader.exe
 
-if not exist "%APP_EXE%" (
-    if exist "%VENV_PATH%" (
-        echo [INFO] Virtual environment exists but app is missing. Repairing setup...
-    ) else (
-        echo [INFO] Virtual environment not found. Starting first-time setup...
-    )
+:: 1. Check for uv and bootstrap if missing
+where uv >nul 2>&1
+if %errorlevel% neq 0 (
+    echo [INFO] uv not found. Installing uv...
+    powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
     
-    python --version >nul 2>&1
+    :: Add uv to PATH for this session
+    set "PATH=%USERPROFILE%\.local\bin;%PATH%"
+    
+    :: Verify installation
+    where uv >nul 2>&1
     if %errorlevel% neq 0 (
-        echo [ERROR] Python not found! Please install Python 3.12 or higher.
+        echo [ERROR] Failed to install uv automatically. 
+        echo Please install it manually from https://astral.sh/uv
         pause
         exit /b 1
     )
-
-    echo [INFO] Creating virtual environment in %VENV_PATH%...
-    python -m venv %VENV_PATH%
-    if %errorlevel% neq 0 (
-        echo [ERROR] Failed to create virtual environment.
-        pause
-        exit /b 1
-    )
-
-    echo [INFO] Upgrading pip...
-    "%VENV_PATH%\Scripts\python.exe" -m pip install --upgrade pip
-
-    echo [INFO] Installing dependencies...
-    "%VENV_PATH%\Scripts\pip.exe" install -e .[dev]
-    if %errorlevel% neq 0 (
-        echo [ERROR] Failed to install dependencies.
-        pause
-        exit /b 1
-    )
-
-    echo [INFO] Installing Playwright browsers...
-    "%VENV_PATH%\Scripts\playwright.exe" install chromium
-    if %errorlevel% neq 0 (
-        echo [ERROR] Failed to install Playwright browsers.
-        pause
-        exit /b 1
-    )
-
-    echo [SUCCESS] Setup complete!
 )
 
+:: 2. Sync environment (uv automatically manages Python 3.12 via pyproject.toml)
+echo [INFO] Syncing environment and dependencies (using uv)...
+uv sync
+if %errorlevel% neq 0 (
+    echo [ERROR] uv sync failed. Please check your internet connection.
+    pause
+    exit /b 1
+)
+
+:: 3. One-time Playwright setup
+if not exist ".venv\playwright_ready" (
+    echo [INFO] Installing Playwright browsers...
+    uv run playwright install chromium
+    if %errorlevel% equ 0 (
+        echo done > ".venv\playwright_ready"
+    ) else (
+        echo [ERROR] Playwright browser installation failed.
+        pause
+        exit /b 1
+    )
+)
+
+:: 4. Launch Application
 echo [INFO] Launching Sankaku Uploader...
-"%VENV_PATH%\Scripts\sankaku-uploader.exe"
+uv run sankaku-uploader
 if %errorlevel% neq 0 (
     echo [ERROR] Application crashed with exit code %errorlevel%
     pause

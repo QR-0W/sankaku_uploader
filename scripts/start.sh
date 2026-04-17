@@ -2,45 +2,37 @@
 
 # Move to project root
 cd "$(dirname "$0")/.."
-VENV_PATH=".venv"
 
-if [ ! -d "$VENV_PATH" ]; then
-    echo "[INFO] Virtual environment not found. Starting first-time setup..."
-    
-    if ! command -v python3 &> /dev/null; then
-        echo "[ERROR] python3 not found! Please install Python 3.12 or higher."
-        exit 1
-    fi
-
-    echo "[INFO] Creating virtual environment in $VENV_PATH..."
-    python3 -m venv "$VENV_PATH"
-    if [ $? -ne 0 ]; then
-        echo "[ERROR] Failed to create virtual environment."
-        exit 1
-    fi
-
-    echo "[INFO] Upgrading pip..."
-    "$VENV_PATH/bin/python" -m pip install --upgrade pip
-
-    echo "[INFO] Installing dependencies..."
-    "$VENV_PATH/bin/pip" install -e .[dev]
-    if [ $? -ne 0 ]; then
-        echo "[ERROR] Failed to install dependencies."
-        exit 1
-    fi
-
-    echo "[INFO] Installing Playwright browsers..."
-    "$VENV_PATH/bin/playwright" install chromium
-    if [ $? -ne 0 ]; then
-        echo "[ERROR] Failed to install Playwright browsers."
-        exit 1
-    fi
-
-    echo "[SUCCESS] Setup complete!"
+# 1. Check for uv and bootstrap if missing
+if ! command -v uv &> /dev/null; then
+    echo "[INFO] uv not found. Installing uv..."
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    source $HOME/.cargo/env
 fi
 
+# 2. Sync environment
+echo "[INFO] Syncing environment and dependencies (using uv)..."
+uv sync
+if [ $? -ne 0 ]; then
+    echo "[ERROR] uv sync failed."
+    exit 1
+fi
+
+# 3. One-time Playwright setup
+if [ ! -f ".venv/playwright_ready" ]; then
+    echo "[INFO] Installing Playwright browsers..."
+    uv run playwright install chromium
+    if [ $? -eq 0 ]; then
+        echo "done" > ".venv/playwright_ready"
+    else
+        echo "[ERROR] Playwright browser installation failed."
+        exit 1
+    fi
+fi
+
+# 4. Launch Application
 echo "[INFO] Launching Sankaku Uploader..."
-"$VENV_PATH/bin/sankaku-uploader"
+uv run sankaku-uploader
 if [ $? -ne 0 ]; then
     echo "[ERROR] Application crashed with exit code $?"
     exit 1
