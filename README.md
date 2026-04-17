@@ -59,7 +59,18 @@
 
 ### 2. 手动安装 (通用)
 
-如果你由于环境限制无法运行启动器，可以手动执行以下步骤：
+如果你由于环境限制无法运行启动器，可以进入 `scripts/` 文件夹手动执行安装脚本：
+
+```bash
+# Windows
+.\scripts\start.bat
+
+# Linux/macOS
+chmod +x ./scripts/start.sh
+./scripts/start.sh
+```
+
+或者完全手动执配置：
 
 ```bash
 # 创建并激活虚拟环境
