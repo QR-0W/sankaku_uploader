@@ -4,9 +4,14 @@ setlocal
 :: Always operate relative to the project root
 cd /d "%~dp0.."
 set VENV_PATH=.venv
+set APP_EXE=%VENV_PATH%\Scripts\sankaku-uploader.exe
 
-if not exist "%VENV_PATH%" (
-    echo [INFO] Virtual environment not found. Starting first-time setup...
+if not exist "%APP_EXE%" (
+    if exist "%VENV_PATH%" (
+        echo [INFO] Virtual environment exists but app is missing. Repairing setup...
+    ) else (
+        echo [INFO] Virtual environment not found. Starting first-time setup...
+    )
     
     python --version >nul 2>&1
     if %errorlevel% neq 0 (
