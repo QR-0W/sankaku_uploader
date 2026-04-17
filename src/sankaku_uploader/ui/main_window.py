@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 from typing import Iterable
@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QTextEdit,
@@ -163,6 +164,7 @@ class MainWindow(QMainWindow):
         self.pending_review_item_id: str | None = None
         self.pending_review_item_ids: set[str] = set()
         self._last_flushed_tags: list[str] = []
+        self._upload_all_queue: list = []  # used by "upload all" feature
 
         self._build_ui()
         self._apply_theme()
@@ -214,12 +216,31 @@ class MainWindow(QMainWindow):
 
         left = QWidget()
         left_layout = QVBoxLayout(left)
-        left_layout.addWidget(QLabel("任务"))
+        left_layout.addWidget(QLabel("任务队列"))
         self.task_list = QListWidget()
         self.task_list.currentItemChanged.connect(self._on_task_selected)
         left_layout.addWidget(self.task_list, 1)
 
-        left_layout.addWidget(self.task_list, 1)
+        # --- Queue management buttons ---
+        self.add_queue_btn = QPushButton("＋ 添加队列 ▾")
+        self.add_queue_btn.setObjectName("add_queue_btn")
+        self.add_queue_btn.clicked.connect(self._show_add_queue_menu)
+        left_layout.addWidget(self.add_queue_btn)
+
+        queue_mgmt_row = QHBoxLayout()
+        self.rename_task_btn = QPushButton("重命名")
+        self.delete_task_btn = QPushButton("删除队列")
+        self.rename_task_btn.clicked.connect(self._rename_task)
+        self.delete_task_btn.clicked.connect(self._delete_task)
+        queue_mgmt_row.addWidget(self.rename_task_btn)
+        queue_mgmt_row.addWidget(self.delete_task_btn)
+        left_layout.addLayout(queue_mgmt_row)
+
+        self.upload_all_button = QPushButton("⬆ 上传全部队列")
+        self.upload_all_button.setObjectName("upload_all_button")
+        self.upload_all_button.clicked.connect(self._start_all_tasks)
+        left_layout.addWidget(self.upload_all_button)
+
         splitter.addWidget(left)
 
         center = QWidget()
@@ -369,28 +390,122 @@ class MainWindow(QMainWindow):
         self._append_log("设置已保存")
 
     def _refresh_task_list(self) -> None:
+        blocker = QSignalBlocker(self.task_list)
         self.task_list.clear()
         for task in self.service.list_tasks():
             text = f"[{task.status.value}] {task.task_name} ({task.task_type.value})"
             item = QListWidgetItem(text)
             item.setData(Qt.ItemDataRole.UserRole, task.task_id)
             self.task_list.addItem(item)
+        del blocker
 
+        # Restore selection to the previously active task without triggering
+        # _on_task_selected (which would re-render and lose queue focus).
         if self.active_task_id:
             for row in range(self.task_list.count()):
                 item = self.task_list.item(row)
                 if item.data(Qt.ItemDataRole.UserRole) == self.active_task_id:
+                    b2 = QSignalBlocker(self.task_list)
                     self.task_list.setCurrentItem(item)
+                    del b2
                     return
 
+        # Fallback: nothing matched, select first
         if self.task_list.count() > 0:
             self.task_list.setCurrentRow(0)
 
-    def _create_task(self) -> None:
-        pass
+    def _show_add_queue_menu(self) -> None:
+        menu = QMenu(self)
+        menu.addAction("普通队列", lambda: self._create_task("normal"))
+        menu.addAction("差分队列", lambda: self._create_task("diff"))
+        menu.exec(self.add_queue_btn.mapToGlobal(self.add_queue_btn.rect().bottomLeft()))
+
+    def _create_task(self, mode: str) -> None:
+        from sankaku_uploader.domain import TaskType
+        task_type = TaskType.DIFF_GROUP if mode == "diff" else TaskType.NORMAL_BATCH
+        tasks = self.service.list_tasks()
+        normal_count = sum(1 for t in tasks if t.task_type == TaskType.NORMAL_BATCH)
+        diff_count = sum(1 for t in tasks if t.task_type == TaskType.DIFF_GROUP)
+        default_name = (
+            f"差分队列 {diff_count + 1}" if task_type == TaskType.DIFF_GROUP
+            else f"普通队列 {normal_count + 1}"
+        )
+        name, ok = QInputDialog.getText(self, "创建队列", "队列名称：", text=default_name)
+        if not ok or not name.strip():
+            return
+        task = self.service.create_task(name.strip(), task_type)
+        self.active_task_id = task.task_id
+        self._refresh_task_list()
+        for row in range(self.task_list.count()):
+            item = self.task_list.item(row)
+            if item.data(Qt.ItemDataRole.UserRole) == task.task_id:
+                self.task_list.setCurrentItem(item)
+                break
+        self._append_log(f"已创建队列：{task.task_name} ({task.task_type.value})")
 
     def _delete_task(self) -> None:
-        pass
+        task = self._active_task()
+        if task is None:
+            return
+        reply = QMessageBox.question(
+            self, "删除队列",
+            f"确定删除队列 \u0027{task.task_name}\u0027？此操作不可撤销。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.service.delete_task(task.task_id)
+        except ValueError as exc:
+            QMessageBox.warning(self, "无法删除", str(exc))
+            return
+        self.active_task_id = None
+        self._refresh_task_list()
+        if self.task_list.count() > 0:
+            self.task_list.setCurrentRow(0)
+        self._append_log(f"已删除队列：{task.task_name}")
+
+    def _rename_task(self) -> None:
+        task = self._active_task()
+        if task is None:
+            return
+        name, ok = QInputDialog.getText(self, "重命名队列", "新名称：", text=task.task_name)
+        if not ok or not name.strip():
+            return
+        self.service.rename_task(task.task_id, name.strip())
+        self._refresh_task_list()
+        self._append_log(f"队列已重命名为：{name.strip()}")
+
+    def _start_all_tasks(self) -> None:
+        if self.runner.is_running():
+            self._append_log("已有任务在执行，请等待当前任务完成后再上传全部")
+            return
+        pending = [t for t in self.service.list_tasks() if t.items]
+        if not pending:
+            QMessageBox.information(self, "提示", "所有队列均为空")
+            return
+        self._upload_all_queue = list(pending)
+        self._append_log(f"准备依次上传 {len(self._upload_all_queue)} 个队列...")
+        self._run_next_in_all_queue()
+
+    def _run_next_in_all_queue(self) -> None:
+        while self._upload_all_queue:
+            task = self._upload_all_queue.pop(0)
+            try:
+                task.validate()
+            except Exception as exc:
+                self._append_log(f"跳过队列 {task.task_name}：{exc}")
+                continue
+            self._save_settings_from_ui()
+            self.service.set_task_status(task.task_id, TaskStatus.RUNNING, force=True)
+            self.active_task_id = task.task_id
+            self.runner.start(task, self.settings)
+            self._refresh_task_list()
+            self._render_active_task()
+            self._append_log(f"[批量] 开始队列：{task.task_name}")
+            return
+        self._append_log("所有队列上传完毕")
+
 
     def _on_task_selected(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:
         if current is None:
@@ -863,6 +978,11 @@ class MainWindow(QMainWindow):
         self._refresh_task_list()
         self._render_active_task()
 
+        # If we're in batch-upload mode, continue with the next queue
+        if self._upload_all_queue:
+            self._run_next_in_all_queue()
+
 
 def build_app() -> QApplication:
     return QApplication.instance() or QApplication([])
+
