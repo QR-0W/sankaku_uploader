@@ -5,21 +5,28 @@ from pathlib import Path
 from datetime import UTC, datetime
 import re
 import time
-from typing import Callable, Iterable, Literal, Protocol
+from typing import Any, Callable, Iterable, Literal, Protocol
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
 from sankaku_uploader.domain import UploadItem
 
-TagDecision = Literal["confirm", "skip", "retry", "sync"]
+TagDecision = Literal["confirm", "skip", "retry", "sync", "wait"]
+ReviewRequestMode = Literal["probe", "decide"]
+
+
 @dataclass(slots=True)
 class ReviewDecision:
     action: TagDecision
     tags_override: list[str] | None = None
+    pending_syncs: list[dict[str, Any]] = field(default_factory=list)
 
 
-ReviewDecisionProvider = Callable[[UploadItem, list[str], bool], ReviewDecision | TagDecision | None]
+ReviewDecisionProvider = Callable[
+    [UploadItem, list[str], bool, ReviewRequestMode],
+    ReviewDecision | TagDecision | None,
+]
 TraceHook = Callable[[str], None]
 
 FILE_INPUT_SELECTORS: tuple[str, ...] = (
@@ -96,6 +103,7 @@ class AutomationConfig:
     run_mode: str = "manual_assist"  # manual_assist | auto_submit
     debug_dir: Path | None = None
     max_concurrent_pages: int = 8
+    proxy_server: str = ""
 
 
 @dataclass(slots=True)
@@ -174,9 +182,6 @@ def extract_ai_tags(page, selectors: Iterable[str] = AI_TAG_SELECTORS) -> list[s
         tags = _normalize_tags([part.strip() for part in re.split(r"[\n,;]+", text) if part.strip()])
         if tags:
             return tags
-    button_tags = _extract_tag_candidates_from_buttons(page)
-    if button_tags:
-        return button_tags
     return []
 
 
@@ -223,7 +228,7 @@ def _normalize_tags(values: Iterable[str]) -> list[str]:
     normalized: list[str] = []
     seen: set[str] = set()
     for value in values:
-        tag = str(value).strip()
+        tag = str(value).strip().replace(" ", "_")
         if not tag:
             continue
         key = tag.lower()
@@ -274,14 +279,6 @@ def _extract_tags_from_editor_section(page) -> tuple[list[str], bool]:
                 if (text) candidates.push(text);
               }
 
-              if (candidates.length === 0 && !inProgress) {
-                const buttons = section.querySelectorAll("button");
-                for (const button of buttons) {
-                  const text = clean(button.textContent);
-                  if (text) candidates.push(text);
-                }
-              }
-
               return { tags: candidates, inProgress };
             }
             """
@@ -321,65 +318,7 @@ def _extract_tags_from_editor_section(page) -> tuple[list[str], bool]:
     return _normalize_tags(filtered), in_progress
 
 
-def _extract_tag_candidates_from_buttons(page) -> list[str]:
-    try:
-        raw = page.evaluate(
-            """
-            () => Array.from(document.querySelectorAll("button"))
-              .map((el) => String(el.textContent || "").trim())
-              .filter(Boolean)
-            """
-        )
-    except Exception:
-        return []
 
-    if not isinstance(raw, list):
-        return []
-
-    blocked = {
-        "upload",
-        "upload file",
-        "create post",
-        "submit",
-        "advanced",
-        "close",
-        "retry",
-        "try again",
-        "cancel",
-        "skip",
-        "confirm",
-        "manual",
-        "auto",
-        "open",
-        "创建帖子",
-        "上传",
-        "高级",
-        "关闭",
-        "重试",
-        "跳过",
-        "确认",
-        "提交",
-        "r15+",
-        "r18+",
-        "清除元数据",
-        "取消自动标记",
-    }
-    candidates: list[str] = []
-    for entry in raw:
-        text = str(entry).strip()
-        low = text.lower()
-        if low in blocked:
-            continue
-        if len(text) < 2 or len(text) > 64:
-            continue
-        if re.fullmatch(r"\d+", text):
-            continue
-        if any(x in low for x in ("http://", "https://")):
-            continue
-        if " " in text:
-            continue
-        candidates.append(text)
-    return _normalize_tags(candidates)
 
 
 def wait_for_ai_tags(page, timeout_seconds: float, poll_interval_seconds: float) -> tuple[list[str], bool]:
@@ -425,8 +364,8 @@ def find_button_by_text(page, candidates: tuple[str, ...]):
                 # Check aria-label and title
                 aria_label = (loc.get_attribute("aria-label") or "").lower().strip()
                 title = (loc.get_attribute("title") or "").lower().strip()
-                
-                if any(candidate in text or candidate in aria_label or candidate in title 
+
+                if any(candidate in text or candidate in aria_label or candidate in title
                        for candidate in normalized_candidates) and loc.is_enabled():
                     return loc
             except Exception:
@@ -469,7 +408,7 @@ class SankakuAutomationClient:
             self.config.debug_dir.mkdir(parents=True, exist_ok=True)
         self._trace(
             f"automation start: items={len(items)} diff_mode={diff_mode} headless={self.config.headless} "
-            f"channel={self.config.browser_channel} profile_dir={self.config.profile_dir}"
+            f"channel={self.config.browser_channel} proxy={self.config.proxy_server} profile_dir={self.config.profile_dir}"
         )
 
         with sync_playwright() as p:
@@ -481,6 +420,8 @@ class SankakuAutomationClient:
             }
             if self.config.browser_channel:
                 launch_kwargs["channel"] = self.config.browser_channel
+            if self.config.proxy_server:
+                launch_kwargs["proxy"] = {"server": self.config.proxy_server}
             context = p.chromium.launch_persistent_context(**launch_kwargs)
             self._force_english_settings(context)
             try:
@@ -511,7 +452,7 @@ class SankakuAutomationClient:
                         )
                         continue
                     known_post_ids = self._collect_known_post_ids(context)
-                    
+
                     # Determine parent post ID for this item in diff mode:
                     # - Item 0 is always the root (no parent).
                     # - Others use root_post_id (which could be the passed-in manual ID or derived from item 0).
@@ -576,25 +517,45 @@ class SankakuAutomationClient:
                 prepared_upload = self._prepare_upload_page(page, context, item)
                 prepared.append(prepared_upload)
 
+                # Stagger requests to prevent "extreme volume" or "please slowdown" anti-bot rate limits
+                if offset < len(chunk) - 1:
+                    import random
+                    stagger_delay = random.uniform(2.0, 4.0)
+                    self._trace(f"staggering next request by {stagger_delay:.1f}s to avoid rate limits...")
+                    time.sleep(stagger_delay)
+
             self._wait_for_prepared_tags(prepared)
 
             for prepared_upload in prepared:
                 if prepared_upload.error:
-                    results.append(
-                        AutomationUploadResult(
-                            item_id=prepared_upload.item.item_id,
-                            success=False,
-                            tag_state="failed",
-                            error=prepared_upload.error,
-                        )
+                    res = AutomationUploadResult(
+                        item_id=prepared_upload.item.item_id,
+                        success=False,
+                        tag_state="failed",
+                        error=prepared_upload.error,
                     )
+                    results.append(res)
+                    if item_result_callback:
+                        try:
+                            item_result_callback(res)
+                        except Exception:
+                            pass
                     self._detach_prepared_upload(prepared_upload)
                     continue
 
-                # Create review cards for all files as soon as their tags are ready. The provider is non-blocking
-                # and will return None until the user confirms a specific item.
+                # Create review cards for all files as soon as their tags are ready.
+                # This is a passive probe; it must never consume queued decisions.
                 if self.review_decision_provider is not None:
-                    self.review_decision_provider(prepared_upload.item, list(prepared_upload.tags), prepared_upload.available)
+                    self._trace(
+                        f"{prepared_upload.item.file_name}: review_request mode=probe context=prepared-card "
+                        f"item_id={prepared_upload.item.item_id}"
+                    )
+                    self.review_decision_provider(
+                        prepared_upload.item,
+                        list(prepared_upload.tags),
+                        prepared_upload.available,
+                        "probe",
+                    )
 
             for prepared_upload in prepared:
                 if prepared_upload.error:
@@ -603,7 +564,7 @@ class SankakuAutomationClient:
                 # post IDs created by earlier submissions in this chunk are
                 # excluded from the detection of the current item's post ID.
                 prepared_upload.known_post_ids = self._collect_known_post_ids(context)
-                result = self._review_and_submit_prepared(prepared_upload, context)
+                result = self._review_and_submit_prepared(prepared_upload, context, all_prepared=prepared)
                 results.append(result)
                 if item_result_callback:
                     try:
@@ -627,7 +588,23 @@ class SankakuAutomationClient:
             response_handler=response_handler,
         )
         try:
-            page.goto(self.config.upload_url, wait_until="domcontentloaded")
+            # Robust retry loop: handle transient VPN/Proxy HTTP/2 or Cloudflare ERR_EMPTY_RESPONSE limits
+            # when massive background payloads (like long GIFs) overlap with a new page.goto negotiation.
+            goto_success = False
+            last_err = None
+            for attempt in range(3):
+                try:
+                    page.goto(self.config.upload_url, wait_until="domcontentloaded", timeout=30000)
+                    goto_success = True
+                    break
+                except Exception as e:
+                    last_err = e
+                    self._trace(f"{item.file_name}: goto failed (attempt {attempt+1}/3): {e}, retrying in 2s...")
+                    time.sleep(2.0)
+
+            if not goto_success:
+                raise RuntimeError(f"failed to load upload page after 3 attempts: {last_err}")
+
             self._dismiss_common_overlays(page)
             ready, reason = self._wait_until_upload_surface_ready(page)
             if not ready:
@@ -652,7 +629,7 @@ class SankakuAutomationClient:
 
     def _wait_for_prepared_tags(self, prepared_uploads: list[PreparedUpload]) -> None:
         pending = [item for item in prepared_uploads if not item.error]
-        
+
         # Wake up background tabs to prevent Chromium from throttling AI tag requests
         if len(pending) > 1:
             for prepared in pending:
@@ -719,7 +696,7 @@ class SankakuAutomationClient:
             self._trace_tag_surface(prepared.page, prepared.item.file_name)
             self._save_debug_artifact(prepared.page, prepared.item, reason="empty-tags")
 
-    def _review_and_submit_prepared(self, prepared: PreparedUpload, context) -> AutomationUploadResult:
+    def _review_and_submit_prepared(self, prepared: PreparedUpload, context, all_prepared: list[PreparedUpload] | None = None) -> AutomationUploadResult:
         try:
             return self._review_and_submit(
                 prepared.page,
@@ -729,6 +706,7 @@ class SankakuAutomationClient:
                 available=prepared.available,
                 known_post_ids=prepared.known_post_ids,
                 response_post_ids=prepared.response_post_ids,
+                all_prepared=all_prepared,
             )
         except Exception as exc:
             self._trace(f"{prepared.item.file_name}: exception during prepared submit: {exc}")
@@ -811,6 +789,7 @@ class SankakuAutomationClient:
         response_post_ids: list[str],
         parent_post_id: str = "",
         attempt: int = 0,
+        all_prepared: list[PreparedUpload] | None = None,
     ) -> AutomationUploadResult:
             if self.config.run_mode == "manual_assist":
                 uploaded_url, post_id = self._wait_for_uploaded_post(
@@ -842,7 +821,7 @@ class SankakuAutomationClient:
                     uploaded_url=uploaded_url,
                 )
 
-            decision = self._review_decision(page, item, tags, available)
+            decision = self._review_decision(page, item, tags, available, all_prepared=all_prepared)
             self._trace(f"{item.file_name}: review decision={decision.action}")
             if decision.action == "skip":
                 return AutomationUploadResult(item_id=item.item_id, success=False, ai_tags=tags, tag_state="skipped", error="skipped by user")
@@ -887,14 +866,14 @@ class SankakuAutomationClient:
                 timeout_seconds=15.0,
                 ignore_post_ids=known_post_ids,
             )
-            
+
             if post_id:
                 # Give a tiny bit of time for the "Already exists" snackbar to appear after redirect
                 time.sleep(0.5)
-            
+
             # ALWAYS check for alerts, even if post_id was found, to catch duplicates that redirect
             alert_type, alert_text = self._detect_page_alerts(page)
-            
+
             if alert_type == "duplicate":
                 existing_id = post_id # Fallback to detected ID if extraction fails
                 # Try to extract ID from alert text
@@ -902,11 +881,11 @@ class SankakuAutomationClient:
                 if not match_id:
                     # Try searching for numeric ID or common post ID patterns in the text
                     match_id = re.search(r"(?:posts/|post #|post |#)(\w+)", alert_text, re.I)
-                
+
                 if match_id:
                     existing_id = match_id.group(1).strip()
                     self._trace(f"{item.file_name}: extracted existing post_id={existing_id} from alert")
-                
+
                 if not existing_id and post_id:
                     existing_id = post_id
                     self._trace(f"{item.file_name}: using redirected post_id={existing_id} as duplicate ID")
@@ -921,7 +900,7 @@ class SankakuAutomationClient:
                     uploaded_url=self._build_post_url(existing_id) if existing_id else "",
                     is_duplicate=True,
                 )
-            
+
             if not post_id:
                 if alert_type == "tag_check_required" and attempt < 3:
                     self._trace(
@@ -937,6 +916,7 @@ class SankakuAutomationClient:
                         known_post_ids=known_post_ids,
                         response_post_ids=response_post_ids,
                         attempt=attempt + 1,
+                        all_prepared=all_prepared,
                     )
                 tag_fix = self._try_apply_minimum_tag(page, tags)
                 self._trace(f"{item.file_name}: first submit got no post_id, tag_fix_applied={tag_fix}")
@@ -963,7 +943,7 @@ class SankakuAutomationClient:
                     alert_type, alert_text = self._detect_page_alerts(page)
                     error_code = "tag_check_required" if alert_type == "tag_check_required" else "submit completed but no post id detected; site may require manual tag selection/edit before posting"
                     tag_state_code = "tag_error" if alert_type == "tag_check_required" else "failed"
-                    
+
                     self._trace(f"{item.file_name}: failed to detect post_id after retry, last_url={uploaded_url}. alert_type={alert_type}")
                     self._save_debug_artifact(page, item, reason="submit-no-post-id")
                     return AutomationUploadResult(
@@ -986,6 +966,8 @@ class SankakuAutomationClient:
 
     def _wait_until_upload_surface_ready(self, page) -> tuple[bool, str]:
         deadline = time.monotonic() + self.config.submit_timeout_seconds
+        auth_detected_time = None
+
         while time.monotonic() < deadline:
             self._dismiss_common_overlays(page)
 
@@ -993,10 +975,20 @@ class SankakuAutomationClient:
                 return True, ""
 
             if self._selector_count(page, AUTH_HINT_SELECTORS) > 0:
-                return False, "login required before upload (auth/2FA screen detected)"
+                if self.config.headless:
+                    return False, "login required before upload (auth/2FA screen detected)"
+                if auth_detected_time is None:
+                    auth_detected_time = time.monotonic()
+                    deadline = time.monotonic() + 300.0  # Give human 5 minutes to login
+                    self._trace("login required. WAITING for human to login in the opened browser...")
+            else:
+                if auth_detected_time is not None:
+                    auth_detected_time = None
 
             time.sleep(self.config.poll_interval_seconds)
 
+        if auth_detected_time is not None:
+             return False, "login timeout (user did not login within 5 minutes)"
         return False, "upload surface not ready (file input not found within timeout)"
 
     def _dismiss_common_overlays(self, page) -> None:
@@ -1038,13 +1030,13 @@ class SankakuAutomationClient:
         """Fills the parent ID using a more robust sequence to ensure React state update."""
         if not parent_post_id:
             return False
-            
+
         self._ensure_advanced_panel_open(page)
         parent_input = find_first_locator(page, PARENT_ID_SELECTORS)
         if parent_input is None:
             self._trace("parent input not found for robust fill")
             return False
-            
+
         try:
             # 1. Focus the element
             parent_input.click()
@@ -1072,17 +1064,17 @@ class SankakuAutomationClient:
                     return
             except Exception:
                 continue
-        
+
         # Try specifically by aria-label first (most stable)
         advanced = page.locator("button[aria-label='advanced'], [aria-label='advanced']").first
         if advanced.count() == 0 or not advanced.is_visible():
             # Fallback to text search
             advanced = find_button_by_text(page, ("advanced", "高级", "高级选项"))
-        
+
         if advanced is None or (hasattr(advanced, "count") and advanced.count() == 0):
             self._trace("advanced expansion button not found")
             return
-            
+
         try:
             advanced.click()
             self._trace("advanced panel expansion clicked")
@@ -1189,17 +1181,17 @@ class SankakuAutomationClient:
         if not isinstance(text, str) or not text.strip():
             return "", ""
         lowered = text.lower()
-        
+
         duplicate_terms = (
-            "已存在", "合并到", "已经存在", "already exists", "merged", 
+            "已存在", "合并到", "已经存在", "already exists", "merged",
             "has been merged", "作为编辑", "exists", "合并"
         )
         if any(term in lowered for term in duplicate_terms):
             return "duplicate", text
-            
+
         tag_terms = ("tag", "tags", "标签", "標籤", "tagging")
         review_terms = ("check", "review", "edit", "modify", "change", "確認", "检查", "檢查", "修改", "更改", "确认")
-        blocking_terms = ("required", "must", "need", "需要", "必须", "必須", "无法", "不能", "can't", "cannot")
+        blocking_terms = ("required", "must", "need", "需要", "必须", "必須", "无法", "不能", "can't", "cannot", "at least 20")
         if any(term in lowered for term in tag_terms) and (
             any(term in lowered for term in review_terms) or any(term in lowered for term in blocking_terms)
         ):
@@ -1473,27 +1465,88 @@ class SankakuAutomationClient:
         except Exception:
             return
 
-    def _review_decision(self, page, item: UploadItem, tags: list[str], available: bool) -> ReviewDecision:
+    def _review_decision(self, page, item: UploadItem, tags: list[str], available: bool, all_prepared: list[PreparedUpload] | None = None) -> ReviewDecision:
         if self.review_decision_provider is None:
             return ReviewDecision("confirm")
 
+        # Helper to apply syncs to other pages in the same batch
+        def process_background_syncs(syncs: list[dict[str, Any]]):
+            if not syncs or not all_prepared:
+                return
+            for sync in syncs:
+                target_id = sync.get("item_id")
+                new_tags = sync.get("tags")
+                if not target_id or target_id == item.item_id or not isinstance(new_tags, list):
+                    continue
+                # Find the page for this item_id in the current batch
+                target_prepared = next((p for p in all_prepared if p.item.item_id == target_id), None)
+                if target_prepared and target_prepared.page:
+                    self._apply_tags_override(target_prepared.page, new_tags)
+
         current_tags = _normalize_tags(tags)
         started = time.monotonic()
+        last_bg_poll = 0.0
+        self._trace(f"{item.file_name}: review_request mode=decide context=active-loop item_id={item.item_id}")
         while time.monotonic() - started < self.config.confirmation_timeout_seconds:
-            edited_tags, tagging_in_progress = _extract_tags_from_editor_section(page)
-            if edited_tags:
-                current_tags = edited_tags
-            elif not tagging_in_progress:
-                current_tags = []
+            # Scrape active page
+            try:
+                edited_tags, tagging_in_progress = _extract_tags_from_editor_section(page)
+                if edited_tags:
+                    current_tags = _normalize_tags(edited_tags)
+                elif not tagging_in_progress:
+                    current_tags = []
+            except Exception:
+                pass
 
-            decision = self.review_decision_provider(item, list(current_tags), available)
+            # Throttled Background Scraper: check other tabs every 1.5s
+            now = time.monotonic()
+            if all_prepared and (now - last_bg_poll > 1.5):
+                last_bg_poll = now
+                for p in all_prepared:
+                    # Skip the active one (already scraped above) and missing pages
+                    if p.item.item_id == item.item_id or not p.page:
+                        continue
+                    try:
+                        bg_tags, bg_tagging = _extract_tags_from_editor_section(p.page)
+                        if bg_tags:
+                             # Report back to the runner, which will emit item_review_update if changed.
+                             # This is a passive probe; it must never consume queued decisions.
+                             self._trace(
+                                 f"{p.item.file_name}: review_request mode=probe context=background-tags "
+                                 f"item_id={p.item.item_id}"
+                             )
+                             bg_decision = self.review_decision_provider(
+                                 p.item,
+                                 list(_normalize_tags(bg_tags)),
+                                 p.available,
+                                 "probe",
+                             )
+                             bg_parsed = self._normalize_review_decision(bg_decision)
+                             if bg_parsed is not None:
+                                 process_background_syncs(bg_parsed.pending_syncs)
+                                 if bg_parsed.action == "sync" and bg_parsed.tags_override is not None:
+                                     applied = self._apply_tags_override(p.page, bg_parsed.tags_override)
+                                     self._trace(
+                                         f"{p.item.file_name}: background live sync applied "
+                                         f"count={len(bg_parsed.tags_override)} success={applied}"
+                                     )
+                    except Exception:
+                        # Dead or restricted background tab, ignore
+                        pass
+
+            decision = self.review_decision_provider(item, list(current_tags), available, "decide")
             parsed = self._normalize_review_decision(decision)
             if parsed is not None:
+                # Always check for background syncs for other items
+                process_background_syncs(parsed.pending_syncs)
+
                 if parsed.action == "sync" and parsed.tags_override is not None:
                     applied = self._apply_tags_override(page, parsed.tags_override)
                     self._trace(
                         f"{item.file_name}: live sync applied count={len(parsed.tags_override)} success={applied}"
                     )
+                    continue
+                if parsed.action == "wait":
                     continue
                 return parsed
             time.sleep(min(self.config.poll_interval_seconds, 0.2))
@@ -1505,10 +1558,10 @@ class SankakuAutomationClient:
         if decision is None:
             return None
         if isinstance(decision, ReviewDecision):
-            if decision.action in {"confirm", "skip", "retry", "sync"}:
+            if decision.action in {"confirm", "skip", "retry", "sync", "wait"}:
                 return decision
-            return ReviewDecision("confirm")
-        if decision in {"confirm", "skip", "retry", "sync"}:
+            return ReviewDecision("confirm", pending_syncs=decision.pending_syncs)
+        if decision in {"confirm", "skip", "retry", "sync", "wait"}:
             return ReviewDecision(decision)
         return None
 

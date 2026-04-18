@@ -85,13 +85,20 @@ int main(int argc, char* argv[]) {
 
     // 5. App Launch
     std::cout << ">>> [Launcher] Starting application..." << std::endl;
-    // We use 'uv run' to ensure the correct managed Python is used regardless of system paths
-    int result = runCommand("uv run sankaku-uploader");
+    
+    // Launch the application asynchronously
+    // ShellExecute will look for 'uv' in the environment paths we just synced.
+    // We use SW_HIDE for the child process's console window if it's a console process,
+    // though the final app is a GUI app.
+    HINSTANCE hInst = ShellExecuteA(NULL, "open", "uv.exe", "run sankaku-uploader", NULL, SW_HIDE);
 
-    if (result != 0) {
-        std::cerr << "!!! [Error] Application exited with code: " << result << std::endl;
+    if ((INT_PTR)hInst <= 32) {
+        std::cerr << "!!! [Error] ShellExecute failed to start the application." << std::endl;
+        std::cerr << ">>> [Hint] Try running 'uv run sankaku-uploader' manually to check for errors." << std::endl;
         system("pause");
+        return 1;
     }
 
+    std::cout << ">>> [Launcher] Application detached. Closing launcher..." << std::endl;
     return 0;
 }

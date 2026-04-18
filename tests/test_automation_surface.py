@@ -129,6 +129,7 @@ def test_wait_until_upload_surface_ready_success() -> None:
 def test_wait_until_upload_surface_ready_login_required() -> None:
     page = FakePage({"input[type='password']": 1})
     client = _build_client()
+    client.config.headless = True
     ready, reason = client._wait_until_upload_surface_ready(page)
     assert ready is False
     assert "login required" in reason
@@ -137,6 +138,7 @@ def test_wait_until_upload_surface_ready_login_required() -> None:
 def test_wait_until_upload_surface_ready_detects_otp_inputs() -> None:
     page = FakePage({"input[role='spinbutton']": 6})
     client = _build_client()
+    client.config.headless = True
     ready, reason = client._wait_until_upload_surface_ready(page)
     assert ready is False
     assert "login required" in reason
@@ -267,7 +269,7 @@ def test_upload_one_syncs_web_edited_tags_before_submit(monkeypatch) -> None:
     monkeypatch.setattr(client, "_dismiss_common_overlays", lambda *_: None)
     monkeypatch.setattr(client, "_select_file", lambda *_: "input_file")
     monkeypatch.setattr("sankaku_uploader.infrastructure.automation.wait_for_ai_tags", lambda *_args, **_kwargs: (["old-tag"], True))
-    monkeypatch.setattr(client, "_review_decision", lambda *_: ReviewDecision("confirm"))
+    monkeypatch.setattr(client, "_review_decision", lambda *_, **__: ReviewDecision("confirm"))
     monkeypatch.setattr(
         client,
         "_sync_tags_after_review",
@@ -290,7 +292,7 @@ def test_upload_one_syncs_manual_clear_to_empty_tags(monkeypatch) -> None:
     monkeypatch.setattr(client, "_dismiss_common_overlays", lambda *_: None)
     monkeypatch.setattr(client, "_select_file", lambda *_: "input_file")
     monkeypatch.setattr("sankaku_uploader.infrastructure.automation.wait_for_ai_tags", lambda *_args, **_kwargs: (["old-tag"], True))
-    monkeypatch.setattr(client, "_review_decision", lambda *_: ReviewDecision("confirm"))
+    monkeypatch.setattr(client, "_review_decision", lambda *_, **__: ReviewDecision("confirm"))
     monkeypatch.setattr(
         client,
         "_sync_tags_after_review",
@@ -349,6 +351,37 @@ def test_review_decision_applies_live_sync_then_waits_for_confirm(monkeypatch) -
     assert applied == [["a", "b"]]
 
 
+def test_review_decision_marks_active_and_background_request_modes(monkeypatch) -> None:
+    client = _build_client()
+    active_page = FakePage({})
+    background_page = FakePage({})
+    active_item = SimpleNamespace(item_id="i1", file_name="active.png")
+    background_item = SimpleNamespace(item_id="i2", file_name="background.png")
+    all_prepared = [
+        SimpleNamespace(item=active_item, page=active_page, available=True),
+        SimpleNamespace(item=background_item, page=background_page, available=True),
+    ]
+    calls: list[tuple[str, str]] = []
+
+    def provider(item, _tags, _available, mode):
+        calls.append((item.item_id, mode))
+        if item.item_id == active_item.item_id and mode == "decide":
+            return ReviewDecision(action="confirm")
+        return None
+
+    monkeypatch.setattr(
+        "sankaku_uploader.infrastructure.automation._extract_tags_from_editor_section",
+        lambda _page: (["web-tag"], False),
+    )
+    client.review_decision_provider = provider
+
+    result = client._review_decision(active_page, active_item, ["base"], True, all_prepared=all_prepared)
+
+    assert result.action == "confirm"
+    assert (background_item.item_id, "probe") in calls
+    assert calls[-1] == (active_item.item_id, "decide")
+
+
 def test_select_working_page_prefers_upload_url() -> None:
     upload_page = FakePage({}, url="https://www.sankakucomplex.com/zh-CN/posts/upload")
     other_page = FakePage({}, url="https://www.sankakucomplex.com/zh-CN/posts/abc")
@@ -370,13 +403,16 @@ def test_close_extra_pages_closes_all_but_kept_page() -> None:
 def test_detect_tag_check_required_from_alert_text() -> None:
     page = FakePage({}, evaluate_result="需要检查标签")
     client = _build_client()
-    assert "tag_check_required" in client._detect_page_alerts(page)
+    alert_type, _alert_text = client._detect_page_alerts(page)
+    assert alert_type == "tag_check_required"
 
 
 def test_detect_tag_check_required_ignores_unrelated_text() -> None:
     page = FakePage({}, evaluate_result="上传完成，没有图片")
     client = _build_client()
-    assert client._detect_page_alerts(page) == ""
+    alert_type, alert_text = client._detect_page_alerts(page)
+    assert alert_type == "unknown"
+    assert alert_text == "上传完成，没有图片"
 
 
 def test_upload_items_uses_concurrent_path_for_normal_batches(monkeypatch) -> None:

@@ -14,6 +14,15 @@ def _build_task(tmp_path: Path) -> UploadTask:
     return task
 
 
+def _build_two_item_task(tmp_path: Path) -> UploadTask:
+    task = UploadTask(task_name="two", task_type=TaskType.NORMAL_BATCH)
+    for name in ["a.png", "b.png"]:
+        path = tmp_path / name
+        path.write_text("x", encoding="utf-8")
+        task.add_paths([path])
+    return task
+
+
 def test_run_upload_task_uses_auto_submit_and_headless(monkeypatch, tmp_path: Path) -> None:
     captured: dict[str, object] = {}
 
@@ -130,8 +139,8 @@ def test_manual_review_provider_preserves_commands_for_other_items(monkeypatch, 
             self.review_decision_provider = review_decision_provider
 
         def upload_items(self, items, *, diff_mode=False, manual_root_post_id="", item_result_callback=None):
-            first = self.review_decision_provider(items[0], ["first"], True)
-            second = self.review_decision_provider(items[1], ["second"], True)
+            first = self.review_decision_provider(items[0], ["first"], True, "decide")
+            second = self.review_decision_provider(items[1], ["second"], True, "decide")
             decisions.append((items[0].item_id, None if first is None else first.action))
             decisions.append((items[1].item_id, None if second is None else second.action))
             results = [
@@ -153,11 +162,7 @@ def test_manual_review_provider_preserves_commands_for_other_items(monkeypatch, 
 
     monkeypatch.setattr(upload_runner, "SankakuAutomationClient", DummyClient)
 
-    task = UploadTask(task_name="two", task_type=TaskType.NORMAL_BATCH)
-    for name in ["a.png", "b.png"]:
-        path = tmp_path / name
-        path.write_text("x", encoding="utf-8")
-        task.add_paths([path])
+    task = _build_two_item_task(tmp_path)
     settings = Settings(
         upload_page_url="https://example.com/upload",
         profile_dir=str(tmp_path / "profile"),
@@ -171,3 +176,138 @@ def test_manual_review_provider_preserves_commands_for_other_items(monkeypatch, 
     upload_runner._run_upload_task(task.to_dict(), settings.to_dict(), out_queue, cmd_queue)
 
     assert decisions == [(task.items[0].item_id, None), (task.items[1].item_id, "confirm")]
+
+
+def test_manual_review_probe_does_not_steal_confirm(monkeypatch, tmp_path: Path) -> None:
+    observed: list[tuple[str, str | None]] = []
+
+    class DummyClient:
+        def __init__(self, config, review_decision_provider=None, trace_hook=None):
+            self.review_decision_provider = review_decision_provider
+
+        def upload_items(self, items, *, diff_mode=False, manual_root_post_id="", item_result_callback=None):
+            probe = self.review_decision_provider(items[1], ["probe"], True, "probe")
+            decide = self.review_decision_provider(items[1], ["decide"], True, "decide")
+            observed.append(("probe", None if probe is None else probe.action))
+            observed.append(("decide", None if decide is None else decide.action))
+            return []
+
+    monkeypatch.setattr(upload_runner, "SankakuAutomationClient", DummyClient)
+
+    task = _build_two_item_task(tmp_path)
+    settings = Settings(
+        upload_page_url="https://example.com/upload",
+        profile_dir=str(tmp_path / "profile"),
+        review_mode=ReviewMode.MANUAL_REVIEW,
+    )
+    out_queue: Queue[str] = Queue()
+    cmd_queue: Queue[str] = Queue()
+    second_item_id = task.items[1].item_id
+    cmd_queue.put(upload_runner.WorkerEvent("decision", {"item_id": second_item_id, "action": "confirm"}).to_json())
+
+    upload_runner._run_upload_task(task.to_dict(), settings.to_dict(), out_queue, cmd_queue)
+
+    assert observed == [("probe", None), ("decide", "confirm")]
+
+
+def test_manual_review_decide_wrong_item_does_not_consume(monkeypatch, tmp_path: Path) -> None:
+    observed: list[tuple[str, str | None]] = []
+
+    class DummyClient:
+        def __init__(self, config, review_decision_provider=None, trace_hook=None):
+            self.review_decision_provider = review_decision_provider
+
+        def upload_items(self, items, *, diff_mode=False, manual_root_post_id="", item_result_callback=None):
+            first = self.review_decision_provider(items[0], ["first"], True, "decide")
+            second = self.review_decision_provider(items[1], ["second"], True, "decide")
+            observed.append((items[0].item_id, None if first is None else first.action))
+            observed.append((items[1].item_id, None if second is None else second.action))
+            return []
+
+    monkeypatch.setattr(upload_runner, "SankakuAutomationClient", DummyClient)
+
+    task = _build_two_item_task(tmp_path)
+    settings = Settings(
+        upload_page_url="https://example.com/upload",
+        profile_dir=str(tmp_path / "profile"),
+        review_mode=ReviewMode.MANUAL_REVIEW,
+    )
+    out_queue: Queue[str] = Queue()
+    cmd_queue: Queue[str] = Queue()
+    second_item_id = task.items[1].item_id
+    cmd_queue.put(upload_runner.WorkerEvent("decision", {"item_id": second_item_id, "action": "confirm"}).to_json())
+
+    upload_runner._run_upload_task(task.to_dict(), settings.to_dict(), out_queue, cmd_queue)
+
+    assert observed == [(task.items[0].item_id, None), (task.items[1].item_id, "confirm")]
+
+
+def test_manual_review_probe_returns_tag_sync_without_consuming_confirm(monkeypatch, tmp_path: Path) -> None:
+    observed: list[tuple[str, str | None, list[str] | None]] = []
+
+    class DummyClient:
+        def __init__(self, config, review_decision_provider=None, trace_hook=None):
+            self.review_decision_provider = review_decision_provider
+
+        def upload_items(self, items, *, diff_mode=False, manual_root_post_id="", item_result_callback=None):
+            probe = self.review_decision_provider(items[1], ["probe"], True, "probe")
+            decide = self.review_decision_provider(items[1], ["decide"], True, "decide")
+            observed.append(("probe", None if probe is None else probe.action, None if probe is None else probe.tags_override))
+            observed.append(("decide", None if decide is None else decide.action, None if decide is None else decide.tags_override))
+            return []
+
+    monkeypatch.setattr(upload_runner, "SankakuAutomationClient", DummyClient)
+
+    task = _build_two_item_task(tmp_path)
+    settings = Settings(
+        upload_page_url="https://example.com/upload",
+        profile_dir=str(tmp_path / "profile"),
+        review_mode=ReviewMode.MANUAL_REVIEW,
+    )
+    out_queue: Queue[str] = Queue()
+    cmd_queue: Queue[str] = Queue()
+    second_item_id = task.items[1].item_id
+    cmd_queue.put(upload_runner.WorkerEvent("decision", {"item_id": second_item_id, "action": "confirm"}).to_json())
+    cmd_queue.put(upload_runner.WorkerEvent("tag_sync", {"item_id": second_item_id, "tags": ["edited"]}).to_json())
+
+    upload_runner._run_upload_task(task.to_dict(), settings.to_dict(), out_queue, cmd_queue)
+
+    assert observed == [("probe", "sync", ["edited"]), ("decide", "confirm", None)]
+
+
+def test_manual_review_original_race_probe_then_later_decide(monkeypatch, tmp_path: Path) -> None:
+    observed: list[tuple[str, str | None]] = []
+
+    class DummyClient:
+        def __init__(self, config, review_decision_provider=None, trace_hook=None):
+            self.review_decision_provider = review_decision_provider
+
+        def upload_items(self, items, *, diff_mode=False, manual_root_post_id="", item_result_callback=None):
+            active_first = self.review_decision_provider(items[0], ["first"], True, "decide")
+            background_second = self.review_decision_provider(items[1], ["background"], True, "probe")
+            active_second = self.review_decision_provider(items[1], ["second"], True, "decide")
+            observed.append(("active_first", None if active_first is None else active_first.action))
+            observed.append(("background_second", None if background_second is None else background_second.action))
+            observed.append(("active_second", None if active_second is None else active_second.action))
+            return []
+
+    monkeypatch.setattr(upload_runner, "SankakuAutomationClient", DummyClient)
+
+    task = _build_two_item_task(tmp_path)
+    settings = Settings(
+        upload_page_url="https://example.com/upload",
+        profile_dir=str(tmp_path / "profile"),
+        review_mode=ReviewMode.MANUAL_REVIEW,
+    )
+    out_queue: Queue[str] = Queue()
+    cmd_queue: Queue[str] = Queue()
+    second_item_id = task.items[1].item_id
+    cmd_queue.put(upload_runner.WorkerEvent("decision", {"item_id": second_item_id, "action": "confirm"}).to_json())
+
+    upload_runner._run_upload_task(task.to_dict(), settings.to_dict(), out_queue, cmd_queue)
+
+    assert observed == [
+        ("active_first", None),
+        ("background_second", None),
+        ("active_second", "confirm"),
+    ]
