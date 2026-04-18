@@ -41,27 +41,42 @@
 
 ---
 
-## 🚥 快速开始
+### 1. 极速启动 (Windows)
 
-### 1. 安装环境
+1. **克隆仓库**：
+   ```bash
+   git clone https://github.com/QR-0W/sankaku_auto_uploader.git
+   cd sankaku_auto_uploader
+   ```
+2. **启动程序**：
+   双击 **`launcher.exe`**。
+   - 程序会自动检测环境，并完成所有必要的配置（如下载 Python、同步依赖库、安装浏览器引擎）。
+   - 一切就绪后，应用将自动开启。
+
+> [!TIP]
+> **遇到环境问题？**
+> 如果安装过程中断或环境损坏，你可以通过命令行运行 `launcher.exe --rebuild` 来强制重置并重新安装环境。
+
+### 2. 手动安装 (通用)
+
+如果你不使用启动器，可以完全手动执配置：
 
 ```bash
-# 克隆仓库
-git clone https://github.com/QR-0W/sankaku_auto_uploader.git
-cd sankaku_auto_uploader/Uploader
+# 安装 uv (推荐) 并运行
+uv run sankaku-uploader
+```
+
+```bash
+# 创建并激活虚拟环境
+python -m venv .venv
+source .venv/bin/activate  # Linux/macOS
+.venv\Scripts\activate     # Windows
 
 # 安装依赖
 pip install -e .[dev]
 
-# 安装 Playwright 浏览器引擎
+# 安装 Playwright 浏览器
 playwright install chromium
-```
-
-### 2. 运行应用
-
-```bash
-# 启动程序
-sankaku-uploader
 ```
 
 ---

@@ -152,6 +152,7 @@ class UploadTask:
     task_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     status: TaskStatus = TaskStatus.PENDING
     root_post_id: str = ""
+    manual_root_post_id: str = ""  # user-supplied parent post ID for diff mode
     items: list[UploadItem] = field(default_factory=list)
     runtime: TaskRuntimeState | None = None
     created_at: str = field(default_factory=utc_now_iso)
@@ -266,6 +267,7 @@ class UploadTask:
             "task_type": self.task_type.value,
             "status": self.status.value,
             "root_post_id": self.root_post_id,
+            "manual_root_post_id": self.manual_root_post_id,
             "items": [item.to_dict() for item in self.items],
             "runtime": self.runtime.to_dict() if self.runtime else None,
             "created_at": self.created_at,
@@ -280,6 +282,7 @@ class UploadTask:
             task_type=TaskType(str(data.get("task_type") or TaskType.NORMAL_BATCH.value)),
             status=TaskStatus(str(data.get("status") or TaskStatus.PENDING.value)),
             root_post_id=str(data.get("root_post_id") or ""),
+            manual_root_post_id=str(data.get("manual_root_post_id") or ""),
             items=[UploadItem.from_dict(item) for item in data.get("items") or []],
             runtime=TaskRuntimeState.from_dict(data["runtime"]) if data.get("runtime") else None,
             created_at=str(data.get("created_at") or utc_now_iso()),
@@ -293,7 +296,7 @@ class UploadTask:
 @dataclass(slots=True)
 class Settings:
     site_url: str = "https://www.sankakucomplex.com"
-    upload_page_url: str = "https://www.sankakucomplex.com/zh-CN/posts/upload"
+    upload_page_url: str = "https://www.sankakucomplex.com/en/posts/upload"
     default_task_mode: TaskType = TaskType.NORMAL_BATCH
     retry_count: int = 1
     auto_save_interval: int = 10
@@ -302,6 +305,7 @@ class Settings:
     profile_dir: str = str(Path.home() / ".sankaku-uploader" / "profile")
     headless: bool = True
     max_concurrent_pages: int = 8
+    proxy_server: str = ""
     ui_preferences: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -316,6 +320,7 @@ class Settings:
             "profile_dir": self.profile_dir,
             "headless": self.headless,
             "max_concurrent_pages": self.max_concurrent_pages,
+            "proxy_server": self.proxy_server,
             "ui_preferences": self.ui_preferences,
         }
 
@@ -332,5 +337,6 @@ class Settings:
             profile_dir=str(data.get("profile_dir") or str(Path.home() / ".sankaku-uploader" / "profile")),
             headless=bool(data.get("headless", True)),
             max_concurrent_pages=max(int(data.get("max_concurrent_pages", 8)), 1),
+            proxy_server=str(data.get("proxy_server") or ""),
             ui_preferences=dict(data.get("ui_preferences") or {}),
         )

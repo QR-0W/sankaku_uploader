@@ -9,7 +9,12 @@ import json
 import time
 
 from sankaku_uploader.domain import Settings, TaskType, UploadTask
-from sankaku_uploader.infrastructure.automation import AutomationConfig, ReviewDecision, SankakuAutomationClient
+from sankaku_uploader.infrastructure.automation import (
+    AutomationConfig,
+    ReviewDecision,
+    ReviewRequestMode,
+    SankakuAutomationClient,
+)
 
 
 @dataclass(slots=True)
@@ -39,10 +44,13 @@ def _run_upload_task(task_payload: dict[str, Any], settings_payload: dict[str, A
     review_state: dict[str, dict[str, Any]] = {}
     command_backlog: list[WorkerEvent] = []
 
-    def review_provider(item, tags, available):
+    def review_provider(item, tags, available, mode: ReviewRequestMode = "probe"):
+        request_mode: ReviewRequestMode = "decide" if mode == "decide" else "probe"
         state = review_state.setdefault(item.item_id, {"initialized": False, "last_tags": None, "last_available": None})
         tag_list = list(tags)
         changed = (state["last_tags"] != tag_list) or (state["last_available"] != available)
+
+        # ... emitters ...
         if not state["initialized"]:
             emit(
                 "item_review",
@@ -81,47 +89,86 @@ def _run_upload_task(task_payload: dict[str, Any], settings_payload: dict[str, A
                 break
             commands_to_scan.append(WorkerEvent.from_json(raw))
 
-        for command in commands_to_scan:
-            if command.payload.get("item_id") != item.item_id:
+        background_syncs: list[dict[str, Any]] = []
+        if commands_to_scan:
+            trace(
+                f"review_request item={item.item_id} mode={request_mode} "
+                f"queued={len(commands_to_scan)}"
+            )
+
+        while commands_to_scan:
+            command = commands_to_scan.pop(0)
+            target_id = command.payload.get("item_id")
+
+            if command.kind == "tag_sync" and target_id != item.item_id:
+                trace(f"Broadcasting tag_sync for Item #{target_id} while handling Item #{item.item_id}.")
+                background_syncs.append(command.payload)
+                continue
+
+            if target_id != item.item_id:
                 command_backlog.append(command)
                 continue
+
             if command.kind == "tag_sync":
                 payload_tags = command.payload.get("tags")
+                trace(f"Processing tag_sync for Item #{item.item_id} (mode={request_mode})")
                 if isinstance(payload_tags, list):
                     tags_override = [str(tag).strip() for tag in payload_tags if str(tag).strip()]
                 else:
                     tags_override = []
-                return ReviewDecision(action="sync", tags_override=tags_override)
-            if command.kind != "decision":
-                continue
-            action = str(command.payload.get("action") or "").strip().lower()
-            if action in {"confirm", "skip", "retry"}:
-                tags_override = None
-                payload_tags = command.payload.get("tags_override")
-                if isinstance(payload_tags, list):
-                    tags_override = [str(tag).strip() for tag in payload_tags if str(tag).strip()]
-                    if action == "confirm" and command.payload.get("tags_override_allow_empty", False) and not payload_tags:
-                        tags_override = []
-                return ReviewDecision(action=action, tags_override=tags_override)
-        return None
+                command_backlog.extend(commands_to_scan)
+                return ReviewDecision(action="sync", tags_override=tags_override, pending_syncs=background_syncs)
+
+            if command.kind == "decision":
+                action = str(command.payload.get("action") or "").strip().lower()
+                if request_mode != "decide":
+                    trace(
+                        f"review_request item={item.item_id} mode={request_mode} "
+                        f"peeked_decision={action or '<empty>'} consumed=False reason=probe"
+                    )
+                    command_backlog.append(command)
+                    continue
+
+                if action in {"confirm", "skip", "retry"}:
+                    trace(
+                        f"review_request item={item.item_id} mode={request_mode} "
+                        f"matched_cmd={action} consumed=True"
+                    )
+                    tags_override = None
+                    payload_tags = command.payload.get("tags_override")
+                    if isinstance(payload_tags, list):
+                        tags_override = [str(tag).strip() for tag in payload_tags if str(tag).strip()]
+                        if action == "confirm" and command.payload.get("tags_override_allow_empty", False) and not payload_tags:
+                            tags_override = []
+                    # CRITICAL: Preserve the rest of current scan
+                    command_backlog.extend(commands_to_scan)
+                    return ReviewDecision(action=action, tags_override=tags_override, pending_syncs=background_syncs)
+
+                trace(
+                    f"review_request item={item.item_id} mode={request_mode} "
+                    f"matched_cmd={action or '<empty>'} consumed=True reason=invalid_decision"
+                )
+
+        return ReviewDecision(action="wait", pending_syncs=background_syncs) if background_syncs else None
 
     emit("task_started", {"task_id": task.task_id, "task_name": task.task_name, "task_type": task.task_type.value})
     trace(
         f"runner config: review_mode={settings.review_mode.value} headless={settings.headless} "
-        f"profile_dir={settings.profile_dir} channel={settings.browser_channel}"
+        f"profile_dir={settings.profile_dir} channel={settings.browser_channel} proxy={settings.proxy_server}"
     )
 
     needs_manual_review = settings.review_mode.value == "manual_review"
 
     client = SankakuAutomationClient(
         AutomationConfig(
-            upload_url=settings.upload_page_url,
+            upload_url=settings.upload_page_url.replace("/zh-CN/", "/en/"),
             profile_dir=Path(settings.profile_dir),
             browser_channel=settings.browser_channel,
             headless=settings.headless,
             run_mode="auto_submit",
             debug_dir=Path(settings.profile_dir).parent / "debug",
             max_concurrent_pages=settings.max_concurrent_pages,
+            proxy_server=settings.proxy_server,
         ),
         review_decision_provider=review_provider if needs_manual_review else None,
         trace_hook=trace,
@@ -143,25 +190,40 @@ def _run_upload_task(task_payload: dict[str, Any], settings_payload: dict[str, A
             },
         )
 
-    results = client.upload_items(pending_items, diff_mode=task.task_type is TaskType.DIFF_GROUP)
-
     has_failures = False
-    for result in results:
+    def result_callback(result):
+        nonlocal has_failures
         if not result.success:
             has_failures = True
+
+        item_name = "(unknown)"
+        for it in task.items:
+            if it.item_id == result.item_id:
+                item_name = it.file_name
+                break
+
         emit(
             "item_result",
             {
                 "task_id": task.task_id,
                 "item_id": result.item_id,
+                "file_name": item_name,
                 "success": result.success,
                 "tag_state": result.tag_state,
                 "ai_tags": result.ai_tags,
                 "post_id": result.post_id,
                 "uploaded_url": result.uploaded_url,
                 "error": result.error,
+                "is_duplicate": getattr(result, "is_duplicate", False),
             },
         )
+
+    results = client.upload_items(
+        pending_items,
+        diff_mode=task.task_type is TaskType.DIFF_GROUP,
+        manual_root_post_id=task.manual_root_post_id or task.root_post_id,
+        item_result_callback=result_callback,
+    )
 
     emit(
         "task_complete",

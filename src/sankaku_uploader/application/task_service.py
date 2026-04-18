@@ -10,25 +10,13 @@ class TaskService:
     def __init__(self, repository: JsonRepository) -> None:
         self.repository = repository
         loaded_tasks = self.repository.load_tasks()
-        
-        normal_task = next((t for t in loaded_tasks if t.task_type == TaskType.NORMAL_BATCH), None)
-        diff_task = next((t for t in loaded_tasks if t.task_type == TaskType.DIFF_GROUP), None)
-        
-        if normal_task is None:
-            normal_task = UploadTask(task_name="普通模式队列", task_type=TaskType.NORMAL_BATCH)
-        if diff_task is None:
-            diff_task = UploadTask(task_name="差分模式队列", task_type=TaskType.DIFF_GROUP)
-            
-        for t in loaded_tasks:
-            if t is not normal_task and t.task_type == TaskType.NORMAL_BATCH:
-                normal_task.items.extend(t.items)
-            elif t is not diff_task and t.task_type == TaskType.DIFF_GROUP:
-                diff_task.items.extend(t.items)
-                
-        normal_task._normalize_indexes()
-        diff_task._normalize_indexes()
 
-        self.tasks: list[UploadTask] = [normal_task, diff_task]
+        # Migrate from legacy two-fixed-task format: accept any number of tasks now.
+        if not loaded_tasks:
+            # Bootstrap with one default task if there's nothing saved at all
+            loaded_tasks = [UploadTask(task_name="普通队列 1", task_type=TaskType.NORMAL_BATCH)]
+
+        self.tasks: list[UploadTask] = loaded_tasks
         self._save()
 
     def list_tasks(self) -> list[UploadTask]:
@@ -41,10 +29,16 @@ class TaskService:
         raise KeyError(f"task not found: {task_id}")
 
     def create_task(self, name: str, task_type: TaskType) -> UploadTask:
-        raise NotImplementedError("Single queue per mode enfored, creating dynamic tasks is disabled.")
+        task = UploadTask(task_name=name, task_type=task_type)
+        self.tasks.append(task)
+        self._save()
+        return task
 
     def delete_task(self, task_id: str) -> None:
-        raise NotImplementedError("Single queue per mode enforced, deleting core tasks is disabled.")
+        if len(self.tasks) <= 1:
+            raise ValueError("至少保留一个队列")
+        self.tasks = [t for t in self.tasks if t.task_id != task_id]
+        self._save()
 
     def add_files(self, task_id: str, paths: list[Path]) -> list[UploadItem]:
         task = self.get_task(task_id)
@@ -114,6 +108,11 @@ class TaskService:
                 self._save()
                 return
 
+    def set_manual_root_post_id(self, task_id: str, post_id: str) -> None:
+        task = self.get_task(task_id)
+        task.manual_root_post_id = post_id.strip()
+        self._save()
+
     def retry_failed_items(self, task_id: str) -> int:
         task = self.get_task(task_id)
         count = 0
@@ -126,6 +125,11 @@ class TaskService:
             task.set_status(TaskStatus.PENDING)
             self._save()
         return count
+
+    def rename_task(self, task_id: str, new_name: str) -> None:
+        task = self.get_task(task_id)
+        task.task_name = new_name.strip()
+        self._save()
 
     def persist(self) -> None:
         self._save()
