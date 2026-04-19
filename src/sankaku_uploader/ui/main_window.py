@@ -5,7 +5,7 @@ from typing import Iterable
 
 from PySide6.QtCore import Qt, QTimer, QSignalBlocker
 from PySide6.QtCore import Signal
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -141,6 +141,12 @@ QLabel#page_section_title {
   font-size: 15px;
   font-weight: 700;
   padding: 4px 0 10px 0;
+}
+QLabel#preview_box {
+  background: #22303d;
+  border: 1px solid #2d4052;
+  border-radius: 10px;
+  color: #7a99b8;
 }
 """
 
@@ -375,10 +381,17 @@ class MainWindow(QMainWindow):
 
         splitter.addWidget(center)
 
-        # Right: File details + tag editor + review buttons
+        # Right: Preview + file details + tag editor + review buttons
         right = QWidget()
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(6, 10, 10, 10)
+        right_layout.addWidget(QLabel("预览图"))
+        self.preview_label = QLabel("暂无预览")
+        self.preview_label.setObjectName("preview_box")
+        self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview_label.setMinimumHeight(220)
+        self.preview_label.setMaximumHeight(300)
+        right_layout.addWidget(self.preview_label)
         right_layout.addWidget(QLabel("\u5f53\u524d\u6587\u4ef6\u8be6\u60c5"))
         self.detail = QPlainTextEdit()
         self.detail.setReadOnly(True)
@@ -435,7 +448,25 @@ class MainWindow(QMainWindow):
         right_layout.addLayout(review_row)
 
         splitter.addWidget(right)
-        splitter.setSizes([235, 720, 430])
+
+        # Far-right: in-page runtime log
+        log_panel = QWidget()
+        log_layout = QVBoxLayout(log_panel)
+        log_layout.setContentsMargins(6, 10, 10, 10)
+        log_header = QHBoxLayout()
+        log_header.addWidget(QLabel("运行日志"))
+        log_header.addStretch()
+        clear_btn = QPushButton("清空")
+        clear_btn.setFixedWidth(80)
+        log_header.addWidget(clear_btn)
+        log_layout.addLayout(log_header)
+        self.log = QTextEdit()
+        self.log.setReadOnly(True)
+        log_layout.addWidget(self.log, 1)
+        clear_btn.clicked.connect(lambda: self.log.clear())
+        splitter.addWidget(log_panel)
+
+        splitter.setSizes([220, 620, 430, 320])
         self._set_review_buttons_enabled(False)
         return page
 
@@ -489,22 +520,21 @@ class MainWindow(QMainWindow):
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(8)
+        layout.setSpacing(12)
 
-        header = QHBoxLayout()
-        title = QLabel("\u8fd0\u884c\u65e5\u5fd7")
+        title = QLabel("\u65e5\u5fd7")
         title.setObjectName("page_section_title")
-        header.addWidget(title)
-        header.addStretch()
-        clear_btn = QPushButton("\u6e05\u7a7a")
-        clear_btn.setFixedWidth(80)
-        clear_btn.clicked.connect(lambda: self.log.clear())
-        header.addWidget(clear_btn)
-        layout.addLayout(header)
+        layout.addWidget(title)
 
-        self.log = QTextEdit()
-        self.log.setReadOnly(True)
-        layout.addWidget(self.log, 1)
+        hint = QLabel("日志已经移动到“任务队列”页面最右侧，方便边上传边查看。")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        btn = QPushButton("前往任务队列")
+        btn.setFixedWidth(140)
+        btn.clicked.connect(lambda: self._switch_page(0))
+        layout.addWidget(btn)
+        layout.addStretch()
         return page
 
     def _apply_theme(self) -> None:
@@ -743,6 +773,9 @@ class MainWindow(QMainWindow):
         self.queue_list.clear()
         if task is None:
             del blocker
+            self.detail.clear()
+            self._set_tag_editor_text([])
+            self._clear_preview()
             return
 
         for item in sorted(task.items, key=lambda x: x.order_index):
@@ -754,6 +787,10 @@ class MainWindow(QMainWindow):
                 self.queue_list.setCurrentItem(list_item)
 
         del blocker
+        if self.queue_list.count() == 0:
+            self.detail.clear()
+            self._set_tag_editor_text([])
+            self._clear_preview()
         if current_item_id is not None:
             self._restore_queue_focus(current_item_id, had_focus)
 
@@ -882,6 +919,7 @@ class MainWindow(QMainWindow):
     def _show_item_detail(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:
         self.detail.clear()
         self._set_tag_editor_text([])
+        self._clear_preview()
         if current is None:
             return
         task = self._active_task()
@@ -905,6 +943,7 @@ class MainWindow(QMainWindow):
                 f"error: {item.error_message}",
             ]
             self.detail.setPlainText("\n".join(lines))
+            self._set_preview_from_path(item.file_path)
             tag_source, _ = self._item_base_tags(item)
             if tag_source:
                 self._set_tag_editor_text(tag_source)
@@ -921,6 +960,34 @@ class MainWindow(QMainWindow):
             self.tag_editor.setPlainText("\n".join(tags))
         finally:
             del blocker
+
+    def _clear_preview(self) -> None:
+        self.preview_label.clear()
+        self.preview_label.setText("暂无预览")
+
+    def _set_preview_from_path(self, file_path: str) -> None:
+        suffix = Path(file_path).suffix.lower()
+        if suffix not in {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}:
+            self.preview_label.clear()
+            self.preview_label.setText("当前文件类型不支持预览")
+            return
+
+        pixmap = QPixmap(file_path)
+        if pixmap.isNull():
+            self.preview_label.clear()
+            self.preview_label.setText("预览加载失败")
+            return
+
+        target_size = self.preview_label.size()
+        if target_size.width() <= 0 or target_size.height() <= 0:
+            target_size = self.preview_label.minimumSizeHint()
+        scaled = pixmap.scaled(
+            target_size,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self.preview_label.setText("")
+        self.preview_label.setPixmap(scaled)
 
     def _set_author_tags_text(self, tags: list[str]) -> None:
         blocker = QSignalBlocker(self.author_tags_editor)
