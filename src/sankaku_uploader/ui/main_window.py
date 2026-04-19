@@ -151,6 +151,129 @@ QLabel#preview_box {
 }
 """
 
+_I18N: dict[str, dict[str, str]] = {
+    "zh": {
+        "app_title": "Sankaku Uploader",
+        "nav_queue": "📋  任务队列",
+        "nav_settings": "⚙️  设置",
+        "nav_log": "📜  日志",
+        "queue_task_title": "任务队列",
+        "queue_upload_title": "上传队列（每条下方展示解析后的 Tag）",
+        "add_queue": "＋ 添加队列 ▾",
+        "rename": "重命名",
+        "delete": "删除",
+        "upload_all": "⬆ 上传全部队列",
+        "add_files": "添加文件",
+        "add_folder": "添加文件夹",
+        "remove_selected": "删除选中",
+        "clear": "清空",
+        "start": "开始",
+        "pause": "暂停",
+        "resume": "恢复",
+        "retry_failed": "重试失败项",
+        "diff_parent_label": "差分模式 父帖子ID",
+        "diff_parent_set": "设置",
+        "diff_parent_placeholder": "留空则由程序自动获取第一张上传的帖子 ID",
+        "preview_title": "预览图（可拖动分隔线调整高度）",
+        "preview_empty": "暂无预览",
+        "preview_unsupported": "当前文件类型不支持预览",
+        "preview_failed": "预览加载失败",
+        "detail_title": "当前文件详情",
+        "author_tags_label": "作者标签（仅差分队列）",
+        "author_tags_placeholder": "每行一个 tag，例如：\nauthor_id_123\nsource_name",
+        "manual_tags_label": "手动标签（每行或逗号分隔）",
+        "manual_tags_placeholder": "例如：\n1girl\nsmile\noutdoors",
+        "apply_tags": "应用标签",
+        "reset_detected": "还原检测标签",
+        "confirm": "确认",
+        "skip": "跳过",
+        "retry": "重试",
+        "runtime_log": "运行日志",
+        "clear_log": "清空",
+        "settings_title": "设置",
+        "form_upload_url": "上传页 URL",
+        "form_profile": "浏览器 Profile",
+        "form_channel": "浏览器通道",
+        "form_concurrency": "并发预取页数",
+        "form_proxy": "代理服务器",
+        "form_review_mode": "标签审核模式",
+        "form_run_mode": "运行方式",
+        "form_language": "界面语言",
+        "headless": "后台运行（不弹浏览器）",
+        "proxy_placeholder": "例如：http://127.0.0.1:7890 或 socks5://127.0.0.1:1080（留空则不使用代理）",
+        "save_settings": "保存设置",
+        "review_manual": "人工审核",
+        "review_quick": "快速通过",
+        "log_title": "日志",
+        "log_hint": "日志已经移动到“任务队列”页面最右侧，方便边上传边查看。",
+        "go_queue": "前往任务队列",
+        "menu_add_normal": "普通队列",
+        "menu_add_diff": "差分队列",
+        "name_normal": "普通队列",
+        "name_diff": "差分队列",
+    },
+    "en": {
+        "app_title": "Sankaku Uploader",
+        "nav_queue": "📋  Task Queue",
+        "nav_settings": "⚙️  Settings",
+        "nav_log": "📜  Logs",
+        "queue_task_title": "Task Queue",
+        "queue_upload_title": "Upload Queue (parsed tags shown under each item)",
+        "add_queue": "＋ Add Queue ▾",
+        "rename": "Rename",
+        "delete": "Delete",
+        "upload_all": "⬆ Upload All Queues",
+        "add_files": "Add Files",
+        "add_folder": "Add Folder",
+        "remove_selected": "Remove Selected",
+        "clear": "Clear",
+        "start": "Start",
+        "pause": "Pause",
+        "resume": "Resume",
+        "retry_failed": "Retry Failed",
+        "diff_parent_label": "Diff Mode Parent Post ID",
+        "diff_parent_set": "Set",
+        "diff_parent_placeholder": "Leave empty to auto-use the first uploaded post ID",
+        "preview_title": "Preview (drag splitter to resize)",
+        "preview_empty": "No preview",
+        "preview_unsupported": "Preview not available for this file type",
+        "preview_failed": "Failed to load preview",
+        "detail_title": "Current File Details",
+        "author_tags_label": "Author Tags (diff queue only)",
+        "author_tags_placeholder": "One tag per line, for example:\nauthor_id_123\nsource_name",
+        "manual_tags_label": "Manual Tags (line or comma separated)",
+        "manual_tags_placeholder": "e.g.\n1girl\nsmile\noutdoors",
+        "apply_tags": "Apply Tags",
+        "reset_detected": "Reset Detected Tags",
+        "confirm": "Confirm",
+        "skip": "Skip",
+        "retry": "Retry",
+        "runtime_log": "Runtime Log",
+        "clear_log": "Clear",
+        "settings_title": "Settings",
+        "form_upload_url": "Upload URL",
+        "form_profile": "Browser Profile",
+        "form_channel": "Browser Channel",
+        "form_concurrency": "Concurrent Prefetch Pages",
+        "form_proxy": "Proxy Server",
+        "form_review_mode": "Review Mode",
+        "form_run_mode": "Run Mode",
+        "form_language": "UI Language",
+        "headless": "Run in background (no browser window)",
+        "proxy_placeholder": "Example: http://127.0.0.1:7890 or socks5://127.0.0.1:1080 (leave empty to disable)",
+        "save_settings": "Save Settings",
+        "review_manual": "Manual Review",
+        "review_quick": "Quick Pass",
+        "log_title": "Logs",
+        "log_hint": "Logs have been moved to the far-right panel on Task Queue page.",
+        "go_queue": "Go to Task Queue",
+        "menu_add_normal": "Normal Queue",
+        "menu_add_diff": "Diff Queue",
+        "name_normal": "Normal Queue",
+        "name_diff": "Diff Queue",
+    },
+}
+
 
 
 
@@ -226,6 +349,7 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._apply_theme()
         self._load_settings_to_ui()
+        self._apply_language()
         self._refresh_task_list()
 
         self.poll_timer = QTimer(self)
@@ -294,6 +418,93 @@ class MainWindow(QMainWindow):
         for i, btn in enumerate(self._nav_btns):
             btn.setChecked(i == index)
 
+    def _ui_language(self) -> str:
+        lang = str(self.settings.ui_preferences.get("language") or "zh").lower()
+        return lang if lang in {"zh", "en"} else "zh"
+
+    def _tr(self, key: str) -> str:
+        lang = self._ui_language()
+        return _I18N.get(lang, _I18N["zh"]).get(key, _I18N["zh"].get(key, key))
+
+    def _set_review_mode_combo_texts(self) -> None:
+        current = self.review_mode_combo.currentData()
+        blocker = QSignalBlocker(self.review_mode_combo)
+        self.review_mode_combo.clear()
+        self.review_mode_combo.addItem(self._tr("review_manual"), ReviewMode.MANUAL_REVIEW.value)
+        self.review_mode_combo.addItem(self._tr("review_quick"), ReviewMode.QUICK_PASS.value)
+        for i in range(self.review_mode_combo.count()):
+            if self.review_mode_combo.itemData(i) == current:
+                self.review_mode_combo.setCurrentIndex(i)
+                break
+        del blocker
+
+    def _apply_language(self) -> None:
+        self.setWindowTitle(self._tr("app_title"))
+        if len(self._nav_btns) >= 3:
+            self._nav_btns[0].setText(self._tr("nav_queue"))
+            self._nav_btns[1].setText(self._tr("nav_settings"))
+            self._nav_btns[2].setText(self._tr("nav_log"))
+
+        self.task_queue_title_label.setText(self._tr("queue_task_title"))
+        self.upload_queue_title_label.setText(self._tr("queue_upload_title"))
+        self.add_queue_btn.setText(self._tr("add_queue"))
+        self.rename_task_btn.setText(self._tr("rename"))
+        self.delete_task_btn.setText(self._tr("delete"))
+        self.upload_all_button.setText(self._tr("upload_all"))
+        self.add_files_button.setText(self._tr("add_files"))
+        self.add_folder_button.setText(self._tr("add_folder"))
+        self.remove_button.setText(self._tr("remove_selected"))
+        self.clear_button.setText(self._tr("clear"))
+        self.start_button.setText(self._tr("start"))
+        self.pause_button.setText(self._tr("pause"))
+        self.resume_button.setText(self._tr("resume"))
+        self.retry_button.setText(self._tr("retry_failed"))
+        self.diff_parent_label.setText(self._tr("diff_parent_label"))
+        self.diff_parent_save_btn.setText(self._tr("diff_parent_set"))
+        self.diff_parent_edit.setPlaceholderText(self._tr("diff_parent_placeholder"))
+
+        self.preview_title_label.setText(self._tr("preview_title"))
+        self.detail_title_label.setText(self._tr("detail_title"))
+        self.manual_tags_title_label.setText(self._tr("manual_tags_label"))
+        self.author_tags_label.setText(self._tr("author_tags_label"))
+        self.author_tags_editor.setPlaceholderText(self._tr("author_tags_placeholder"))
+        self.tag_editor.setPlaceholderText(self._tr("manual_tags_placeholder"))
+        self.apply_tags_button.setText(self._tr("apply_tags"))
+        self.reset_tags_button.setText(self._tr("reset_detected"))
+        self.confirm_review_button.setText(self._tr("confirm"))
+        self.skip_review_button.setText(self._tr("skip"))
+        self.retry_review_button.setText(self._tr("retry"))
+        self.runtime_log_title_label.setText(self._tr("runtime_log"))
+        self.runtime_log_clear_btn.setText(self._tr("clear_log"))
+        self.settings_title_label.setText(self._tr("settings_title"))
+        self.headless_check.setText(self._tr("headless"))
+        self.proxy_server_edit.setPlaceholderText(self._tr("proxy_placeholder"))
+        self.save_settings_button.setText(self._tr("save_settings"))
+        self.log_page_title_label.setText(self._tr("log_title"))
+        self.log_page_hint_label.setText(self._tr("log_hint"))
+        self.log_page_go_btn.setText(self._tr("go_queue"))
+        if self.preview_label.pixmap() is None:
+            self.preview_label.setText(self._tr("preview_empty"))
+
+        self._set_review_mode_combo_texts()
+        self._update_settings_form_labels()
+
+    def _update_settings_form_labels(self) -> None:
+        label_map = {
+            self.upload_url_edit: self._tr("form_upload_url"),
+            self.profile_dir_edit: self._tr("form_profile"),
+            self.browser_channel_edit: self._tr("form_channel"),
+            self.max_concurrent_pages_edit: self._tr("form_concurrency"),
+            self.proxy_server_edit: self._tr("form_proxy"),
+            self.review_mode_combo: self._tr("form_review_mode"),
+            self.ui_language_combo: self._tr("form_language"),
+            self.headless_check: self._tr("form_run_mode"),
+        }
+        for field, text in label_map.items():
+            label = self.settings_form.labelForField(field)
+            if label is not None:
+                label.setText(text)
+
     def _build_queue_page(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
@@ -307,7 +518,8 @@ class MainWindow(QMainWindow):
         left = QWidget()
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(10, 10, 6, 10)
-        left_layout.addWidget(QLabel("\u4efb\u52a1\u961f\u5217"))
+        self.task_queue_title_label = QLabel("\u4efb\u52a1\u961f\u5217")
+        left_layout.addWidget(self.task_queue_title_label)
         self.task_list = QListWidget()
         self.task_list.currentItemChanged.connect(self._on_task_selected)
         left_layout.addWidget(self.task_list, 1)
@@ -336,7 +548,8 @@ class MainWindow(QMainWindow):
         center = QWidget()
         center_layout = QVBoxLayout(center)
         center_layout.setContentsMargins(6, 10, 6, 10)
-        center_layout.addWidget(QLabel("\u4e0a\u4f20\u961f\u5217\uff08\u6bcf\u6761\u4e0b\u65b9\u5c55\u793a\u89e3\u6790\u540e\u7684 Tag\uff09"))
+        self.upload_queue_title_label = QLabel("\u4e0a\u4f20\u961f\u5217\uff08\u6bcf\u6761\u4e0b\u65b9\u5c55\u793a\u89e3\u6790\u540e\u7684 Tag\uff09")
+        center_layout.addWidget(self.upload_queue_title_label)
         self.queue_list = TaskQueueListWidget(self._add_paths_to_active_task, self._persist_reorder)
         self.queue_list.currentItemChanged.connect(self._show_item_detail)
         center_layout.addWidget(self.queue_list, 1)
@@ -394,8 +607,9 @@ class MainWindow(QMainWindow):
         preview_layout = QVBoxLayout(preview_panel)
         preview_layout.setContentsMargins(0, 0, 0, 0)
         preview_layout.setSpacing(6)
-        preview_layout.addWidget(QLabel("Preview (drag splitter to resize)"))
-        self.preview_label = QLabel("No preview")
+        self.preview_title_label = QLabel("Preview (drag splitter to resize)")
+        preview_layout.addWidget(self.preview_title_label)
+        self.preview_label = QLabel(self._tr("preview_empty"))
         self.preview_label.setObjectName("preview_box")
         self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview_label.setMinimumHeight(80)
@@ -407,7 +621,8 @@ class MainWindow(QMainWindow):
         detail_layout = QVBoxLayout(detail_panel)
         detail_layout.setContentsMargins(0, 0, 0, 0)
         detail_layout.setSpacing(6)
-        detail_layout.addWidget(QLabel("Current file details"))
+        self.detail_title_label = QLabel("Current file details")
+        detail_layout.addWidget(self.detail_title_label)
         self.detail = QPlainTextEdit()
         self.detail.setReadOnly(True)
         detail_layout.addWidget(self.detail, 1)
@@ -432,7 +647,8 @@ class MainWindow(QMainWindow):
         self._set_diff_author_tag_controls_visible(False)
 
         tag_header_layout = QHBoxLayout()
-        tag_header_layout.addWidget(QLabel("Manual tags (line or comma separated)"))
+        self.manual_tags_title_label = QLabel("Manual tags (line or comma separated)")
+        tag_header_layout.addWidget(self.manual_tags_title_label)
         self.tag_count_label = QLabel("0 / 20")
         self.tag_count_label.setStyleSheet("color: #f44336; font-weight: bold;")
         tag_header_layout.addStretch()
@@ -476,16 +692,17 @@ class MainWindow(QMainWindow):
         log_layout = QVBoxLayout(log_panel)
         log_layout.setContentsMargins(6, 10, 10, 10)
         log_header = QHBoxLayout()
-        log_header.addWidget(QLabel("运行日志"))
+        self.runtime_log_title_label = QLabel("运行日志")
+        log_header.addWidget(self.runtime_log_title_label)
         log_header.addStretch()
-        clear_btn = QPushButton("清空")
-        clear_btn.setFixedWidth(80)
-        log_header.addWidget(clear_btn)
+        self.runtime_log_clear_btn = QPushButton("清空")
+        self.runtime_log_clear_btn.setFixedWidth(80)
+        log_header.addWidget(self.runtime_log_clear_btn)
         log_layout.addLayout(log_header)
         self.log = QTextEdit()
         self.log.setReadOnly(True)
         log_layout.addWidget(self.log, 1)
-        clear_btn.clicked.connect(lambda: self.log.clear())
+        self.runtime_log_clear_btn.clicked.connect(lambda: self.log.clear())
         splitter.addWidget(log_panel)
 
         splitter.setSizes([220, 620, 430, 320])
@@ -498,14 +715,14 @@ class MainWindow(QMainWindow):
         outer.setContentsMargins(48, 32, 48, 32)
         outer.setSpacing(0)
 
-        title = QLabel("\u8bbe\u7f6e")
-        title.setObjectName("page_section_title")
-        outer.addWidget(title)
+        self.settings_title_label = QLabel("\u8bbe\u7f6e")
+        self.settings_title_label.setObjectName("page_section_title")
+        outer.addWidget(self.settings_title_label)
 
-        form = QFormLayout()
-        form.setFormAlignment(Qt.AlignmentFlag.AlignLeft)
-        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        form.setSpacing(14)
+        self.settings_form = QFormLayout()
+        self.settings_form.setFormAlignment(Qt.AlignmentFlag.AlignLeft)
+        self.settings_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        self.settings_form.setSpacing(14)
 
         self.upload_url_edit = QLineEdit()
         self.profile_dir_edit = QLineEdit()
@@ -519,16 +736,20 @@ class MainWindow(QMainWindow):
         self.review_mode_combo = QComboBox()
         self.review_mode_combo.addItem("\u4eba\u5de5\u5ba1\u6838", ReviewMode.MANUAL_REVIEW.value)
         self.review_mode_combo.addItem("\u5feb\u901f\u901a\u8fc7", ReviewMode.QUICK_PASS.value)
+        self.ui_language_combo = QComboBox()
+        self.ui_language_combo.addItem("中文", "zh")
+        self.ui_language_combo.addItem("English", "en")
         self.headless_check = QCheckBox("\u540e\u53f0\u8fd0\u884c\uff08\u4e0d\u5f39\u6d4f\u89c8\u5668\uff09")
 
-        form.addRow("\u4e0a\u4f20\u9875 URL", self.upload_url_edit)
-        form.addRow("\u6d4f\u89c8\u5668 Profile", self.profile_dir_edit)
-        form.addRow("\u6d4f\u89c8\u5668\u901a\u9053", self.browser_channel_edit)
-        form.addRow("\u5e76\u53d1\u9884\u53d6\u9875\u6570", self.max_concurrent_pages_edit)
-        form.addRow("\u4ee3\u7406\u670d\u52a1\u5668", self.proxy_server_edit)
-        form.addRow("\u6807\u7b7e\u5ba1\u6838\u6a21\u5f0f", self.review_mode_combo)
-        form.addRow("\u8fd0\u884c\u65b9\u5f0f", self.headless_check)
-        outer.addLayout(form)
+        self.settings_form.addRow("\u4e0a\u4f20\u9875 URL", self.upload_url_edit)
+        self.settings_form.addRow("\u6d4f\u89c8\u5668 Profile", self.profile_dir_edit)
+        self.settings_form.addRow("\u6d4f\u89c8\u5668\u901a\u9053", self.browser_channel_edit)
+        self.settings_form.addRow("\u5e76\u53d1\u9884\u53d6\u9875\u6570", self.max_concurrent_pages_edit)
+        self.settings_form.addRow("\u4ee3\u7406\u670d\u52a1\u5668", self.proxy_server_edit)
+        self.settings_form.addRow("\u6807\u7b7e\u5ba1\u6838\u6a21\u5f0f", self.review_mode_combo)
+        self.settings_form.addRow("\u754c\u9762\u8bed\u8a00", self.ui_language_combo)
+        self.settings_form.addRow("\u8fd0\u884c\u65b9\u5f0f", self.headless_check)
+        outer.addLayout(self.settings_form)
         outer.addSpacing(24)
 
         self.save_settings_button = QPushButton("\u4fdd\u5b58\u8bbe\u7f6e")
@@ -544,18 +765,18 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
 
-        title = QLabel("\u65e5\u5fd7")
-        title.setObjectName("page_section_title")
-        layout.addWidget(title)
+        self.log_page_title_label = QLabel("\u65e5\u5fd7")
+        self.log_page_title_label.setObjectName("page_section_title")
+        layout.addWidget(self.log_page_title_label)
 
-        hint = QLabel("日志已经移动到“任务队列”页面最右侧，方便边上传边查看。")
-        hint.setWordWrap(True)
-        layout.addWidget(hint)
+        self.log_page_hint_label = QLabel("日志已经移动到“任务队列”页面最右侧，方便边上传边查看。")
+        self.log_page_hint_label.setWordWrap(True)
+        layout.addWidget(self.log_page_hint_label)
 
-        btn = QPushButton("前往任务队列")
-        btn.setFixedWidth(140)
-        btn.clicked.connect(lambda: self._switch_page(0))
-        layout.addWidget(btn)
+        self.log_page_go_btn = QPushButton("前往任务队列")
+        self.log_page_go_btn.setFixedWidth(140)
+        self.log_page_go_btn.clicked.connect(lambda: self._switch_page(0))
+        layout.addWidget(self.log_page_go_btn)
         layout.addStretch()
         return page
 
@@ -591,6 +812,11 @@ class MainWindow(QMainWindow):
         self.max_concurrent_pages_edit.setText(str(self.settings.max_concurrent_pages))
         self.proxy_server_edit.setText(getattr(self.settings, 'proxy_server', ''))
         self.headless_check.setChecked(self.settings.headless)
+        lang = self._ui_language()
+        for i in range(self.ui_language_combo.count()):
+            if self.ui_language_combo.itemData(i) == lang:
+                self.ui_language_combo.setCurrentIndex(i)
+                break
         for i in range(self.review_mode_combo.count()):
             if self.review_mode_combo.itemData(i) == self.settings.review_mode.value:
                 self.review_mode_combo.setCurrentIndex(i)
@@ -608,6 +834,8 @@ class MainWindow(QMainWindow):
         self.settings.review_mode = ReviewMode(str(self.review_mode_combo.currentData()))
         self.settings.headless = self.headless_check.isChecked()
         self.settings.proxy_server = self.proxy_server_edit.text().strip()
+        self.settings.ui_preferences["language"] = str(self.ui_language_combo.currentData() or "zh")
+        self._apply_language()
         self.repository.save_settings(self.settings)
         self._append_log("设置已保存")
 
@@ -638,8 +866,8 @@ class MainWindow(QMainWindow):
 
     def _show_add_queue_menu(self) -> None:
         menu = QMenu(self)
-        menu.addAction("普通队列", lambda: self._create_task("normal"))
-        menu.addAction("差分队列", lambda: self._create_task("diff"))
+        menu.addAction(self._tr("menu_add_normal"), lambda: self._create_task("normal"))
+        menu.addAction(self._tr("menu_add_diff"), lambda: self._create_task("diff"))
         menu.exec(self.add_queue_btn.mapToGlobal(self.add_queue_btn.rect().bottomLeft()))
 
     def _create_task(self, mode: str) -> None:
@@ -649,8 +877,8 @@ class MainWindow(QMainWindow):
         normal_count = sum(1 for t in tasks if t.task_type == TaskType.NORMAL_BATCH)
         diff_count = sum(1 for t in tasks if t.task_type == TaskType.DIFF_GROUP)
         default_name = (
-            f"差分队列 {diff_count + 1}" if task_type == TaskType.DIFF_GROUP
-            else f"普通队列 {normal_count + 1}"
+            f"{self._tr('name_diff')} {diff_count + 1}" if task_type == TaskType.DIFF_GROUP
+            else f"{self._tr('name_normal')} {normal_count + 1}"
         )
         name, ok = QInputDialog.getText(self, "创建队列", "队列名称：", text=default_name)
         if not ok or not name.strip():
@@ -985,19 +1213,19 @@ class MainWindow(QMainWindow):
 
     def _clear_preview(self) -> None:
         self.preview_label.clear()
-        self.preview_label.setText("暂无预览")
+        self.preview_label.setText(self._tr("preview_empty"))
 
     def _set_preview_from_path(self, file_path: str) -> None:
         suffix = Path(file_path).suffix.lower()
         if suffix not in {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}:
             self.preview_label.clear()
-            self.preview_label.setText("当前文件类型不支持预览")
+            self.preview_label.setText(self._tr("preview_unsupported"))
             return
 
         pixmap = QPixmap(file_path)
         if pixmap.isNull():
             self.preview_label.clear()
-            self.preview_label.setText("预览加载失败")
+            self.preview_label.setText(self._tr("preview_failed"))
             return
 
         target_width = max(1, self.preview_label.contentsRect().width())
