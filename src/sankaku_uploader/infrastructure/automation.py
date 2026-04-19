@@ -182,6 +182,10 @@ def extract_ai_tags(page, selectors: Iterable[str] = AI_TAG_SELECTORS) -> list[s
         tags = _normalize_tags([part.strip() for part in re.split(r"[\n,;]+", text) if part.strip()])
         if tags:
             return tags
+
+    button_tags = _extract_ai_tags_from_button_controls(page)
+    if button_tags:
+        return button_tags
     return []
 
 
@@ -237,6 +241,57 @@ def _normalize_tags(values: Iterable[str]) -> list[str]:
         seen.add(key)
         normalized.append(tag)
     return normalized
+
+
+def _extract_ai_tags_from_button_controls(page) -> list[str]:
+    try:
+        raw_tags = page.evaluate(
+            """
+            () => {
+              const clean = (text) =>
+                String(text || "")
+                  .replace(/\\s+/g, " ")
+                  .trim();
+
+              const blocked = new Set([
+                "clear metadata",
+                "create post",
+                "advanced",
+                "upload",
+                "submit",
+                "close",
+              ]);
+
+              const tags = [];
+              for (const node of document.querySelectorAll("button, [role='button'], a")) {
+                const text = clean(node.textContent || node.getAttribute("aria-label") || node.getAttribute("title"));
+                if (!text) continue;
+                if (blocked.has(text.toLowerCase())) continue;
+                tags.push(text);
+              }
+              return tags;
+            }
+            """
+        )
+    except Exception:
+        return []
+    if not isinstance(raw_tags, list):
+        return []
+    tags = _normalize_tags([str(x) for x in raw_tags if str(x).strip()])
+    blocked_controls = {
+        "clear metadata",
+        "create post",
+        "advanced",
+        "upload",
+        "submit",
+        "close",
+    }
+    filtered: list[str] = []
+    for tag in tags:
+        if tag.lower().replace("_", " ") in blocked_controls:
+            continue
+        filtered.append(tag)
+    return filtered
 
 
 def _extract_tags_from_editor_section(page) -> tuple[list[str], bool]:
@@ -425,6 +480,13 @@ class SankakuAutomationClient:
             context = p.chromium.launch_persistent_context(**launch_kwargs)
             self._force_english_settings(context)
             try:
+                if diff_mode and len(items) > 1:
+                    return self._upload_diff_group_concurrent(
+                        context,
+                        items,
+                        item_result_callback,
+                        manual_root_post_id=manual_root_post_id,
+                    )
                 if not diff_mode and len(items) > 1:
                     return self._upload_normal_batch_concurrent(context, items, item_result_callback)
 
@@ -577,6 +639,120 @@ class SankakuAutomationClient:
 
         return results
 
+    def _upload_diff_group_concurrent(
+        self,
+        context,
+        items: list[UploadItem],
+        item_result_callback: Callable[[AutomationUploadResult], None] | None,
+        *,
+        manual_root_post_id: str = "",
+    ) -> list[AutomationUploadResult]:
+        results: list[AutomationUploadResult] = []
+        chunk_size = max(1, min(int(self.config.max_concurrent_pages or 1), len(items)))
+        self._trace(f"diff group concurrent prep mode: pages={chunk_size} items={len(items)}")
+
+        root_post_id = manual_root_post_id.strip()
+        if root_post_id:
+            self._trace(f"diff mode: using manual root_post_id={root_post_id}")
+        root_failed = False
+
+        for start in range(0, len(items), chunk_size):
+            chunk = items[start : start + chunk_size]
+            prepared: list[PreparedUpload] = []
+            keep_page = self._select_working_page(context)
+            self._close_extra_pages(context, keep_page=keep_page)
+
+            for offset, item in enumerate(chunk):
+                page = keep_page if offset == 0 else context.new_page()
+                self._trace(
+                    f"[{start+offset+1}/{len(items)}] prepare upload page for item={item.file_name} item_id={item.item_id}"
+                )
+                prepared_upload = self._prepare_upload_page(page, context, item)
+                prepared.append(prepared_upload)
+
+                if offset < len(chunk) - 1:
+                    import random
+
+                    stagger_delay = random.uniform(2.0, 4.0)
+                    self._trace(f"staggering next request by {stagger_delay:.1f}s to avoid rate limits...")
+                    time.sleep(stagger_delay)
+
+            self._wait_for_prepared_tags(prepared)
+
+            for prepared_upload in prepared:
+                if prepared_upload.error:
+                    res = AutomationUploadResult(
+                        item_id=prepared_upload.item.item_id,
+                        success=False,
+                        tag_state="failed",
+                        error=prepared_upload.error,
+                    )
+                    results.append(res)
+                    if item_result_callback:
+                        try:
+                            item_result_callback(res)
+                        except Exception:
+                            pass
+                    self._detach_prepared_upload(prepared_upload)
+                    continue
+
+                if self.review_decision_provider is not None:
+                    self._trace(
+                        f"{prepared_upload.item.file_name}: review_request context=prepared-card "
+                        f"item_id={prepared_upload.item.item_id}"
+                    )
+                    self.review_decision_provider(prepared_upload.item, list(prepared_upload.tags), prepared_upload.available)
+
+            for prepared_upload in prepared:
+                if prepared_upload.error:
+                    continue
+
+                prepared_upload.known_post_ids = self._collect_known_post_ids(context)
+
+                if root_failed and prepared_upload.item.order_index > 0:
+                    res = AutomationUploadResult(
+                        item_id=prepared_upload.item.item_id,
+                        success=False,
+                        tag_state="failed",
+                        error="root post id missing in diff mode",
+                    )
+                    results.append(res)
+                    if item_result_callback:
+                        try:
+                            item_result_callback(res)
+                        except Exception:
+                            pass
+                    self._detach_prepared_upload(prepared_upload)
+                    continue
+
+                parent_post_id = root_post_id if prepared_upload.item.order_index > 0 else ""
+                result = self._review_and_submit_prepared(
+                    prepared_upload,
+                    context,
+                    all_prepared=prepared,
+                    parent_post_id=parent_post_id,
+                )
+                results.append(result)
+                if item_result_callback:
+                    try:
+                        item_result_callback(result)
+                    except Exception:
+                        pass
+
+                if prepared_upload.item.order_index == 0:
+                    if result.success and result.post_id:
+                        root_post_id = result.post_id
+                        self._trace(f"root post id established from upload (order_index 0): {root_post_id}")
+                    else:
+                        root_failed = True
+                elif not root_post_id:
+                    root_failed = True
+                self._detach_prepared_upload(prepared_upload)
+
+            self._close_extra_pages(context, keep_page=keep_page)
+
+        return results
+
     def _prepare_upload_page(self, page, context, item: UploadItem) -> PreparedUpload:
         known_post_ids = self._collect_known_post_ids(context)
         response_post_ids, response_handler = self._attach_response_capture(page, item, known_post_ids)
@@ -696,7 +872,14 @@ class SankakuAutomationClient:
             self._trace_tag_surface(prepared.page, prepared.item.file_name)
             self._save_debug_artifact(prepared.page, prepared.item, reason="empty-tags")
 
-    def _review_and_submit_prepared(self, prepared: PreparedUpload, context, all_prepared: list[PreparedUpload] | None = None) -> AutomationUploadResult:
+    def _review_and_submit_prepared(
+        self,
+        prepared: PreparedUpload,
+        context,
+        *,
+        all_prepared: list[PreparedUpload] | None = None,
+        parent_post_id: str = "",
+    ) -> AutomationUploadResult:
         try:
             return self._review_and_submit(
                 prepared.page,
@@ -706,6 +889,7 @@ class SankakuAutomationClient:
                 available=prepared.available,
                 known_post_ids=prepared.known_post_ids,
                 response_post_ids=prepared.response_post_ids,
+                parent_post_id=parent_post_id,
                 all_prepared=all_prepared,
             )
         except Exception as exc:
@@ -876,14 +1060,9 @@ class SankakuAutomationClient:
 
             if alert_type == "duplicate":
                 existing_id = post_id # Fallback to detected ID if extraction fails
-                # Try to extract ID from alert text
-                match_id = re.search(r"#( [A-Za-z0-9]{5,32}|[A-Za-z0-9]{5,32})", alert_text)
-                if not match_id:
-                    # Try searching for numeric ID or common post ID patterns in the text
-                    match_id = re.search(r"(?:posts/|post #|post |#)(\w+)", alert_text, re.I)
-
-                if match_id:
-                    existing_id = match_id.group(1).strip()
+                alert_post_id = self._extract_post_id_from_alert_text(alert_text)
+                if alert_post_id:
+                    existing_id = alert_post_id
                     self._trace(f"{item.file_name}: extracted existing post_id={existing_id} from alert")
 
                 if not existing_id and post_id:
@@ -1197,6 +1376,18 @@ class SankakuAutomationClient:
         ):
             return "tag_check_required", text
         return "unknown", text
+
+    @staticmethod
+    def _extract_post_id_from_alert_text(alert_text: str) -> str:
+        if not alert_text:
+            return ""
+        candidates: list[str] = []
+        candidates.extend(re.findall(r"/posts/([A-Za-z0-9]{5,64})", alert_text, flags=re.I))
+        candidates.extend(re.findall(r"post\s*#\s*([A-Za-z0-9]{5,64})", alert_text, flags=re.I))
+        candidates.extend(re.findall(r"post\s*id[:=]\s*([A-Za-z0-9]{5,64})", alert_text, flags=re.I))
+        candidates.extend(re.findall(r"id[:=]\s*([A-Za-z0-9]{5,64})", alert_text, flags=re.I))
+        normalized = SankakuAutomationClient._normalize_post_ids(candidates)
+        return normalized[0] if normalized else ""
 
     def _wait_for_uploaded_post(
         self,

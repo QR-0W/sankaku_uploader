@@ -5,7 +5,7 @@ from typing import Iterable
 
 from PySide6.QtCore import Qt, QTimer, QSignalBlocker
 from PySide6.QtCore import Signal
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QTextEdit,
     QPlainTextEdit,
     QSplitter,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -142,7 +143,136 @@ QLabel#page_section_title {
   font-weight: 700;
   padding: 4px 0 10px 0;
 }
+QLabel#preview_box {
+  background: #22303d;
+  border: 1px solid #2d4052;
+  border-radius: 10px;
+  color: #7a99b8;
+}
 """
+
+_I18N: dict[str, dict[str, str]] = {
+    "zh": {
+        "app_title": "Sankaku Uploader",
+        "nav_queue": "📋  任务队列",
+        "nav_settings": "⚙️  设置",
+        "nav_log": "📜  日志",
+        "queue_task_title": "任务队列",
+        "queue_upload_title": "上传队列（每条下方展示解析后的 Tag）",
+        "add_queue": "＋ 添加队列 ▾",
+        "rename": "重命名",
+        "delete": "删除",
+        "upload_all": "⬆ 上传全部队列",
+        "add_files": "添加文件",
+        "add_folder": "添加文件夹",
+        "remove_selected": "删除选中",
+        "clear": "清空",
+        "start": "开始",
+        "pause": "暂停",
+        "resume": "恢复",
+        "retry_failed": "重试失败项",
+        "diff_parent_label": "差分模式 父帖子ID",
+        "diff_parent_set": "设置",
+        "diff_parent_placeholder": "留空则由程序自动获取第一张上传的帖子 ID",
+        "preview_title": "预览图（可拖动分隔线调整高度）",
+        "preview_empty": "暂无预览",
+        "preview_unsupported": "当前文件类型不支持预览",
+        "preview_failed": "预览加载失败",
+        "detail_title": "当前文件详情",
+        "author_tags_label": "作者标签（仅差分队列）",
+        "author_tags_placeholder": "每行一个 tag，例如：\nauthor_id_123\nsource_name",
+        "manual_tags_label": "手动标签（每行或逗号分隔）",
+        "manual_tags_placeholder": "例如：\n1girl\nsmile\noutdoors",
+        "apply_tags": "应用标签",
+        "reset_detected": "还原检测标签",
+        "confirm": "确认",
+        "skip": "跳过",
+        "retry": "重试",
+        "runtime_log": "运行日志",
+        "clear_log": "清空",
+        "settings_title": "设置",
+        "form_upload_url": "上传页 URL",
+        "form_profile": "浏览器 Profile",
+        "form_channel": "浏览器通道",
+        "form_concurrency": "并发预取页数",
+        "form_proxy": "代理服务器",
+        "form_review_mode": "标签审核模式",
+        "form_run_mode": "运行方式",
+        "form_language": "界面语言",
+        "headless": "后台运行（不弹浏览器）",
+        "proxy_placeholder": "例如：http://127.0.0.1:7890 或 socks5://127.0.0.1:1080（留空则不使用代理）",
+        "save_settings": "保存设置",
+        "review_manual": "人工审核",
+        "review_quick": "快速通过",
+        "log_title": "日志",
+        "log_hint": "日志已经移动到“任务队列”页面最右侧，方便边上传边查看。",
+        "go_queue": "前往任务队列",
+        "menu_add_normal": "普通队列",
+        "menu_add_diff": "差分队列",
+        "name_normal": "普通队列",
+        "name_diff": "差分队列",
+    },
+    "en": {
+        "app_title": "Sankaku Uploader",
+        "nav_queue": "📋  Task Queue",
+        "nav_settings": "⚙️  Settings",
+        "nav_log": "📜  Logs",
+        "queue_task_title": "Task Queue",
+        "queue_upload_title": "Upload Queue (parsed tags shown under each item)",
+        "add_queue": "＋ Add Queue ▾",
+        "rename": "Rename",
+        "delete": "Delete",
+        "upload_all": "⬆ Upload All Queues",
+        "add_files": "Add Files",
+        "add_folder": "Add Folder",
+        "remove_selected": "Remove Selected",
+        "clear": "Clear",
+        "start": "Start",
+        "pause": "Pause",
+        "resume": "Resume",
+        "retry_failed": "Retry Failed",
+        "diff_parent_label": "Diff Mode Parent Post ID",
+        "diff_parent_set": "Set",
+        "diff_parent_placeholder": "Leave empty to auto-use the first uploaded post ID",
+        "preview_title": "Preview (drag splitter to resize)",
+        "preview_empty": "No preview",
+        "preview_unsupported": "Preview not available for this file type",
+        "preview_failed": "Failed to load preview",
+        "detail_title": "Current File Details",
+        "author_tags_label": "Author Tags (diff queue only)",
+        "author_tags_placeholder": "One tag per line, for example:\nauthor_id_123\nsource_name",
+        "manual_tags_label": "Manual Tags (line or comma separated)",
+        "manual_tags_placeholder": "e.g.\n1girl\nsmile\noutdoors",
+        "apply_tags": "Apply Tags",
+        "reset_detected": "Reset Detected Tags",
+        "confirm": "Confirm",
+        "skip": "Skip",
+        "retry": "Retry",
+        "runtime_log": "Runtime Log",
+        "clear_log": "Clear",
+        "settings_title": "Settings",
+        "form_upload_url": "Upload URL",
+        "form_profile": "Browser Profile",
+        "form_channel": "Browser Channel",
+        "form_concurrency": "Concurrent Prefetch Pages",
+        "form_proxy": "Proxy Server",
+        "form_review_mode": "Review Mode",
+        "form_run_mode": "Run Mode",
+        "form_language": "UI Language",
+        "headless": "Run in background (no browser window)",
+        "proxy_placeholder": "Example: http://127.0.0.1:7890 or socks5://127.0.0.1:1080 (leave empty to disable)",
+        "save_settings": "Save Settings",
+        "review_manual": "Manual Review",
+        "review_quick": "Quick Pass",
+        "log_title": "Logs",
+        "log_hint": "Logs have been moved to the far-right panel on Task Queue page.",
+        "go_queue": "Go to Task Queue",
+        "menu_add_normal": "Normal Queue",
+        "menu_add_diff": "Diff Queue",
+        "name_normal": "Normal Queue",
+        "name_diff": "Diff Queue",
+    },
+}
 
 
 
@@ -213,12 +343,13 @@ class MainWindow(QMainWindow):
         self.active_task_id: str | None = None
         self.pending_review_item_id: str | None = None
         self.pending_review_item_ids: set[str] = set()
-        self._last_flushed_tags: list[str] = []
         self._upload_all_queue: list = []  # used by "upload all" feature
+        self._last_synced_effective_tags_by_item: dict[str, list[str]] = {}
 
         self._build_ui()
         self._apply_theme()
         self._load_settings_to_ui()
+        self._apply_language()
         self._refresh_task_list()
 
         self.poll_timer = QTimer(self)
@@ -287,6 +418,93 @@ class MainWindow(QMainWindow):
         for i, btn in enumerate(self._nav_btns):
             btn.setChecked(i == index)
 
+    def _ui_language(self) -> str:
+        lang = str(self.settings.ui_preferences.get("language") or "zh").lower()
+        return lang if lang in {"zh", "en"} else "zh"
+
+    def _tr(self, key: str) -> str:
+        lang = self._ui_language()
+        return _I18N.get(lang, _I18N["zh"]).get(key, _I18N["zh"].get(key, key))
+
+    def _set_review_mode_combo_texts(self) -> None:
+        current = self.review_mode_combo.currentData()
+        blocker = QSignalBlocker(self.review_mode_combo)
+        self.review_mode_combo.clear()
+        self.review_mode_combo.addItem(self._tr("review_manual"), ReviewMode.MANUAL_REVIEW.value)
+        self.review_mode_combo.addItem(self._tr("review_quick"), ReviewMode.QUICK_PASS.value)
+        for i in range(self.review_mode_combo.count()):
+            if self.review_mode_combo.itemData(i) == current:
+                self.review_mode_combo.setCurrentIndex(i)
+                break
+        del blocker
+
+    def _apply_language(self) -> None:
+        self.setWindowTitle(self._tr("app_title"))
+        if len(self._nav_btns) >= 3:
+            self._nav_btns[0].setText(self._tr("nav_queue"))
+            self._nav_btns[1].setText(self._tr("nav_settings"))
+            self._nav_btns[2].setText(self._tr("nav_log"))
+
+        self.task_queue_title_label.setText(self._tr("queue_task_title"))
+        self.upload_queue_title_label.setText(self._tr("queue_upload_title"))
+        self.add_queue_btn.setText(self._tr("add_queue"))
+        self.rename_task_btn.setText(self._tr("rename"))
+        self.delete_task_btn.setText(self._tr("delete"))
+        self.upload_all_button.setText(self._tr("upload_all"))
+        self.add_files_button.setText(self._tr("add_files"))
+        self.add_folder_button.setText(self._tr("add_folder"))
+        self.remove_button.setText(self._tr("remove_selected"))
+        self.clear_button.setText(self._tr("clear"))
+        self.start_button.setText(self._tr("start"))
+        self.pause_button.setText(self._tr("pause"))
+        self.resume_button.setText(self._tr("resume"))
+        self.retry_button.setText(self._tr("retry_failed"))
+        self.diff_parent_label.setText(self._tr("diff_parent_label"))
+        self.diff_parent_save_btn.setText(self._tr("diff_parent_set"))
+        self.diff_parent_edit.setPlaceholderText(self._tr("diff_parent_placeholder"))
+
+        self.preview_title_label.setText(self._tr("preview_title"))
+        self.detail_title_label.setText(self._tr("detail_title"))
+        self.manual_tags_title_label.setText(self._tr("manual_tags_label"))
+        self.author_tags_label.setText(self._tr("author_tags_label"))
+        self.author_tags_editor.setPlaceholderText(self._tr("author_tags_placeholder"))
+        self.tag_editor.setPlaceholderText(self._tr("manual_tags_placeholder"))
+        self.apply_tags_button.setText(self._tr("apply_tags"))
+        self.reset_tags_button.setText(self._tr("reset_detected"))
+        self.confirm_review_button.setText(self._tr("confirm"))
+        self.skip_review_button.setText(self._tr("skip"))
+        self.retry_review_button.setText(self._tr("retry"))
+        self.runtime_log_title_label.setText(self._tr("runtime_log"))
+        self.runtime_log_clear_btn.setText(self._tr("clear_log"))
+        self.settings_title_label.setText(self._tr("settings_title"))
+        self.headless_check.setText(self._tr("headless"))
+        self.proxy_server_edit.setPlaceholderText(self._tr("proxy_placeholder"))
+        self.save_settings_button.setText(self._tr("save_settings"))
+        self.log_page_title_label.setText(self._tr("log_title"))
+        self.log_page_hint_label.setText(self._tr("log_hint"))
+        self.log_page_go_btn.setText(self._tr("go_queue"))
+        if self.preview_label.pixmap() is None:
+            self.preview_label.setText(self._tr("preview_empty"))
+
+        self._set_review_mode_combo_texts()
+        self._update_settings_form_labels()
+
+    def _update_settings_form_labels(self) -> None:
+        label_map = {
+            self.upload_url_edit: self._tr("form_upload_url"),
+            self.profile_dir_edit: self._tr("form_profile"),
+            self.browser_channel_edit: self._tr("form_channel"),
+            self.max_concurrent_pages_edit: self._tr("form_concurrency"),
+            self.proxy_server_edit: self._tr("form_proxy"),
+            self.review_mode_combo: self._tr("form_review_mode"),
+            self.ui_language_combo: self._tr("form_language"),
+            self.headless_check: self._tr("form_run_mode"),
+        }
+        for field, text in label_map.items():
+            label = self.settings_form.labelForField(field)
+            if label is not None:
+                label.setText(text)
+
     def _build_queue_page(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
@@ -300,7 +518,8 @@ class MainWindow(QMainWindow):
         left = QWidget()
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(10, 10, 6, 10)
-        left_layout.addWidget(QLabel("\u4efb\u52a1\u961f\u5217"))
+        self.task_queue_title_label = QLabel("\u4efb\u52a1\u961f\u5217")
+        left_layout.addWidget(self.task_queue_title_label)
         self.task_list = QListWidget()
         self.task_list.currentItemChanged.connect(self._on_task_selected)
         left_layout.addWidget(self.task_list, 1)
@@ -329,7 +548,8 @@ class MainWindow(QMainWindow):
         center = QWidget()
         center_layout = QVBoxLayout(center)
         center_layout.setContentsMargins(6, 10, 6, 10)
-        center_layout.addWidget(QLabel("\u4e0a\u4f20\u961f\u5217\uff08\u6bcf\u6761\u4e0b\u65b9\u5c55\u793a\u89e3\u6790\u540e\u7684 Tag\uff09"))
+        self.upload_queue_title_label = QLabel("\u4e0a\u4f20\u961f\u5217\uff08\u6bcf\u6761\u4e0b\u65b9\u5c55\u793a\u89e3\u6790\u540e\u7684 Tag\uff09")
+        center_layout.addWidget(self.upload_queue_title_label)
         self.queue_list = TaskQueueListWidget(self._add_paths_to_active_task, self._persist_reorder)
         self.queue_list.currentItemChanged.connect(self._show_item_detail)
         center_layout.addWidget(self.queue_list, 1)
@@ -375,53 +595,117 @@ class MainWindow(QMainWindow):
 
         splitter.addWidget(center)
 
-        # Right: File details + tag editor + review buttons
+        # Right: Preview + file details + tag editor + review buttons
         right = QWidget()
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(6, 10, 10, 10)
-        right_layout.addWidget(QLabel("\u5f53\u524d\u6587\u4ef6\u8be6\u60c5"))
+        right_splitter = QSplitter(Qt.Orientation.Vertical)
+        right_splitter.setChildrenCollapsible(False)
+        right_layout.addWidget(right_splitter, 1)
+
+        preview_panel = QWidget()
+        preview_layout = QVBoxLayout(preview_panel)
+        preview_layout.setContentsMargins(0, 0, 0, 0)
+        preview_layout.setSpacing(6)
+        self.preview_title_label = QLabel("Preview (drag splitter to resize)")
+        preview_layout.addWidget(self.preview_title_label)
+        self.preview_label = QLabel(self._tr("preview_empty"))
+        self.preview_label.setObjectName("preview_box")
+        self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview_label.setMinimumHeight(80)
+        self.preview_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
+        preview_layout.addWidget(self.preview_label, 1)
+        right_splitter.addWidget(preview_panel)
+
+        detail_panel = QWidget()
+        detail_layout = QVBoxLayout(detail_panel)
+        detail_layout.setContentsMargins(0, 0, 0, 0)
+        detail_layout.setSpacing(6)
+        self.detail_title_label = QLabel("Current file details")
+        detail_layout.addWidget(self.detail_title_label)
         self.detail = QPlainTextEdit()
         self.detail.setReadOnly(True)
-        right_layout.addWidget(self.detail, 1)
+        detail_layout.addWidget(self.detail, 1)
+        right_splitter.addWidget(detail_panel)
+
+        editor_panel = QWidget()
+        editor_layout = QVBoxLayout(editor_panel)
+        editor_layout.setContentsMargins(0, 0, 0, 0)
+        editor_layout.setSpacing(6)
+
+        self.author_tags_label = QLabel("Author tags (diff queue only)")
+        editor_layout.addWidget(self.author_tags_label)
+        self.author_tags_editor = QPlainTextEdit()
+        self.author_tags_editor.setPlaceholderText("One tag per line, for example:\nauthor_id_123\nsource_name")
+        self.author_tags_editor.setMaximumHeight(96)
+        editor_layout.addWidget(self.author_tags_editor)
+        self.author_tags_timer = QTimer(self)
+        self.author_tags_timer.setSingleShot(True)
+        self.author_tags_timer.setInterval(350)
+        self.author_tags_timer.timeout.connect(self._save_author_tags_from_ui)
+        self.author_tags_editor.textChanged.connect(lambda: self.author_tags_timer.start())
+        self._set_diff_author_tag_controls_visible(False)
 
         tag_header_layout = QHBoxLayout()
-        tag_header_layout.addWidget(QLabel("\u624b\u52a8\u6807\u7b7e\u7f16\u8f91\uff08\u6bcf\u884c\u6216\u9017\u53f7\u5206\u9694\uff09"))
+        self.manual_tags_title_label = QLabel("Manual tags (line or comma separated)")
+        tag_header_layout.addWidget(self.manual_tags_title_label)
         self.tag_count_label = QLabel("0 / 20")
         self.tag_count_label.setStyleSheet("color: #f44336; font-weight: bold;")
         tag_header_layout.addStretch()
         tag_header_layout.addWidget(self.tag_count_label)
-        right_layout.addLayout(tag_header_layout)
+        editor_layout.addLayout(tag_header_layout)
 
         self.tag_editor = TagEditorWidget()
-        self.tag_editor.setPlaceholderText("\u4f8b\u5982\uff1a\n1girl\nsmile\noutdoors")
+        self.tag_editor.setPlaceholderText("e.g.\n1girl\nsmile\noutdoors")
         self.tag_editor.setMaximumHeight(140)
         self.tag_editor.commitRequested.connect(self._flush_pending_local_tag_sync)
         self.tag_editor.textChanged.connect(self._update_tag_count_display)
-        right_layout.addWidget(self.tag_editor)
+        editor_layout.addWidget(self.tag_editor)
 
         tag_btn_row = QHBoxLayout()
-        self.apply_tags_button = QPushButton("\u5e94\u7528\u6807\u7b7e")
-        self.reset_tags_button = QPushButton("\u8fd8\u539f\u68c0\u6d4b\u6807\u7b7e")
+        self.apply_tags_button = QPushButton("Apply tags")
+        self.reset_tags_button = QPushButton("Reset detected tags")
         self.apply_tags_button.clicked.connect(self._apply_manual_tags)
         self.reset_tags_button.clicked.connect(self._reset_tags_from_detected)
         tag_btn_row.addWidget(self.apply_tags_button)
         tag_btn_row.addWidget(self.reset_tags_button)
-        right_layout.addLayout(tag_btn_row)
+        editor_layout.addLayout(tag_btn_row)
 
         review_row = QHBoxLayout()
-        self.confirm_review_button = QPushButton("\u786e\u8ba4\u63d0\u4ea4")
-        self.skip_review_button = QPushButton("\u8df3\u8fc7")
-        self.retry_review_button = QPushButton("\u91cd\u8bd5")
+        self.confirm_review_button = QPushButton("Confirm")
+        self.skip_review_button = QPushButton("Skip")
+        self.retry_review_button = QPushButton("Retry")
         self.confirm_review_button.clicked.connect(lambda: self._send_review_decision("confirm"))
         self.skip_review_button.clicked.connect(lambda: self._send_review_decision("skip"))
         self.retry_review_button.clicked.connect(lambda: self._send_review_decision("retry"))
         review_row.addWidget(self.confirm_review_button)
         review_row.addWidget(self.skip_review_button)
         review_row.addWidget(self.retry_review_button)
-        right_layout.addLayout(review_row)
+        editor_layout.addLayout(review_row)
+        right_splitter.addWidget(editor_panel)
+        right_splitter.setSizes([260, 220, 300])
 
         splitter.addWidget(right)
-        splitter.setSizes([235, 720, 430])
+
+        # Far-right: in-page runtime log
+        log_panel = QWidget()
+        log_layout = QVBoxLayout(log_panel)
+        log_layout.setContentsMargins(6, 10, 10, 10)
+        log_header = QHBoxLayout()
+        self.runtime_log_title_label = QLabel("运行日志")
+        log_header.addWidget(self.runtime_log_title_label)
+        log_header.addStretch()
+        self.runtime_log_clear_btn = QPushButton("清空")
+        self.runtime_log_clear_btn.setFixedWidth(80)
+        log_header.addWidget(self.runtime_log_clear_btn)
+        log_layout.addLayout(log_header)
+        self.log = QTextEdit()
+        self.log.setReadOnly(True)
+        log_layout.addWidget(self.log, 1)
+        self.runtime_log_clear_btn.clicked.connect(lambda: self.log.clear())
+        splitter.addWidget(log_panel)
+
+        splitter.setSizes([220, 620, 430, 320])
         self._set_review_buttons_enabled(False)
         return page
 
@@ -431,14 +715,14 @@ class MainWindow(QMainWindow):
         outer.setContentsMargins(48, 32, 48, 32)
         outer.setSpacing(0)
 
-        title = QLabel("\u8bbe\u7f6e")
-        title.setObjectName("page_section_title")
-        outer.addWidget(title)
+        self.settings_title_label = QLabel("\u8bbe\u7f6e")
+        self.settings_title_label.setObjectName("page_section_title")
+        outer.addWidget(self.settings_title_label)
 
-        form = QFormLayout()
-        form.setFormAlignment(Qt.AlignmentFlag.AlignLeft)
-        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        form.setSpacing(14)
+        self.settings_form = QFormLayout()
+        self.settings_form.setFormAlignment(Qt.AlignmentFlag.AlignLeft)
+        self.settings_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        self.settings_form.setSpacing(14)
 
         self.upload_url_edit = QLineEdit()
         self.profile_dir_edit = QLineEdit()
@@ -452,16 +736,20 @@ class MainWindow(QMainWindow):
         self.review_mode_combo = QComboBox()
         self.review_mode_combo.addItem("\u4eba\u5de5\u5ba1\u6838", ReviewMode.MANUAL_REVIEW.value)
         self.review_mode_combo.addItem("\u5feb\u901f\u901a\u8fc7", ReviewMode.QUICK_PASS.value)
+        self.ui_language_combo = QComboBox()
+        self.ui_language_combo.addItem("中文", "zh")
+        self.ui_language_combo.addItem("English", "en")
         self.headless_check = QCheckBox("\u540e\u53f0\u8fd0\u884c\uff08\u4e0d\u5f39\u6d4f\u89c8\u5668\uff09")
 
-        form.addRow("\u4e0a\u4f20\u9875 URL", self.upload_url_edit)
-        form.addRow("\u6d4f\u89c8\u5668 Profile", self.profile_dir_edit)
-        form.addRow("\u6d4f\u89c8\u5668\u901a\u9053", self.browser_channel_edit)
-        form.addRow("\u5e76\u53d1\u9884\u53d6\u9875\u6570", self.max_concurrent_pages_edit)
-        form.addRow("\u4ee3\u7406\u670d\u52a1\u5668", self.proxy_server_edit)
-        form.addRow("\u6807\u7b7e\u5ba1\u6838\u6a21\u5f0f", self.review_mode_combo)
-        form.addRow("\u8fd0\u884c\u65b9\u5f0f", self.headless_check)
-        outer.addLayout(form)
+        self.settings_form.addRow("\u4e0a\u4f20\u9875 URL", self.upload_url_edit)
+        self.settings_form.addRow("\u6d4f\u89c8\u5668 Profile", self.profile_dir_edit)
+        self.settings_form.addRow("\u6d4f\u89c8\u5668\u901a\u9053", self.browser_channel_edit)
+        self.settings_form.addRow("\u5e76\u53d1\u9884\u53d6\u9875\u6570", self.max_concurrent_pages_edit)
+        self.settings_form.addRow("\u4ee3\u7406\u670d\u52a1\u5668", self.proxy_server_edit)
+        self.settings_form.addRow("\u6807\u7b7e\u5ba1\u6838\u6a21\u5f0f", self.review_mode_combo)
+        self.settings_form.addRow("\u754c\u9762\u8bed\u8a00", self.ui_language_combo)
+        self.settings_form.addRow("\u8fd0\u884c\u65b9\u5f0f", self.headless_check)
+        outer.addLayout(self.settings_form)
         outer.addSpacing(24)
 
         self.save_settings_button = QPushButton("\u4fdd\u5b58\u8bbe\u7f6e")
@@ -475,22 +763,21 @@ class MainWindow(QMainWindow):
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(8)
+        layout.setSpacing(12)
 
-        header = QHBoxLayout()
-        title = QLabel("\u8fd0\u884c\u65e5\u5fd7")
-        title.setObjectName("page_section_title")
-        header.addWidget(title)
-        header.addStretch()
-        clear_btn = QPushButton("\u6e05\u7a7a")
-        clear_btn.setFixedWidth(80)
-        clear_btn.clicked.connect(lambda: self.log.clear())
-        header.addWidget(clear_btn)
-        layout.addLayout(header)
+        self.log_page_title_label = QLabel("\u65e5\u5fd7")
+        self.log_page_title_label.setObjectName("page_section_title")
+        layout.addWidget(self.log_page_title_label)
 
-        self.log = QTextEdit()
-        self.log.setReadOnly(True)
-        layout.addWidget(self.log, 1)
+        self.log_page_hint_label = QLabel("日志已经移动到“任务队列”页面最右侧，方便边上传边查看。")
+        self.log_page_hint_label.setWordWrap(True)
+        layout.addWidget(self.log_page_hint_label)
+
+        self.log_page_go_btn = QPushButton("前往任务队列")
+        self.log_page_go_btn.setFixedWidth(140)
+        self.log_page_go_btn.clicked.connect(lambda: self._switch_page(0))
+        layout.addWidget(self.log_page_go_btn)
+        layout.addStretch()
         return page
 
     def _apply_theme(self) -> None:
@@ -525,6 +812,11 @@ class MainWindow(QMainWindow):
         self.max_concurrent_pages_edit.setText(str(self.settings.max_concurrent_pages))
         self.proxy_server_edit.setText(getattr(self.settings, 'proxy_server', ''))
         self.headless_check.setChecked(self.settings.headless)
+        lang = self._ui_language()
+        for i in range(self.ui_language_combo.count()):
+            if self.ui_language_combo.itemData(i) == lang:
+                self.ui_language_combo.setCurrentIndex(i)
+                break
         for i in range(self.review_mode_combo.count()):
             if self.review_mode_combo.itemData(i) == self.settings.review_mode.value:
                 self.review_mode_combo.setCurrentIndex(i)
@@ -542,6 +834,8 @@ class MainWindow(QMainWindow):
         self.settings.review_mode = ReviewMode(str(self.review_mode_combo.currentData()))
         self.settings.headless = self.headless_check.isChecked()
         self.settings.proxy_server = self.proxy_server_edit.text().strip()
+        self.settings.ui_preferences["language"] = str(self.ui_language_combo.currentData() or "zh")
+        self._apply_language()
         self.repository.save_settings(self.settings)
         self._append_log("设置已保存")
 
@@ -572,8 +866,8 @@ class MainWindow(QMainWindow):
 
     def _show_add_queue_menu(self) -> None:
         menu = QMenu(self)
-        menu.addAction("普通队列", lambda: self._create_task("normal"))
-        menu.addAction("差分队列", lambda: self._create_task("diff"))
+        menu.addAction(self._tr("menu_add_normal"), lambda: self._create_task("normal"))
+        menu.addAction(self._tr("menu_add_diff"), lambda: self._create_task("diff"))
         menu.exec(self.add_queue_btn.mapToGlobal(self.add_queue_btn.rect().bottomLeft()))
 
     def _create_task(self, mode: str) -> None:
@@ -583,8 +877,8 @@ class MainWindow(QMainWindow):
         normal_count = sum(1 for t in tasks if t.task_type == TaskType.NORMAL_BATCH)
         diff_count = sum(1 for t in tasks if t.task_type == TaskType.DIFF_GROUP)
         default_name = (
-            f"差分队列 {diff_count + 1}" if task_type == TaskType.DIFF_GROUP
-            else f"普通队列 {normal_count + 1}"
+            f"{self._tr('name_diff')} {diff_count + 1}" if task_type == TaskType.DIFF_GROUP
+            else f"{self._tr('name_normal')} {normal_count + 1}"
         )
         name, ok = QInputDialog.getText(self, "创建队列", "队列名称：", text=default_name)
         if not ok or not name.strip():
@@ -666,20 +960,40 @@ class MainWindow(QMainWindow):
     def _on_task_selected(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:
         if current is None:
             return
+        self._save_author_tags_from_ui()
         self.active_task_id = str(current.data(Qt.ItemDataRole.UserRole))
         task = self._active_task()
         is_diff = task is not None and task.task_type is TaskType.DIFF_GROUP
         self._set_diff_parent_row_visible(is_diff)
+        self._set_diff_author_tag_controls_visible(is_diff)
         if is_diff and task is not None:
             blocker = QSignalBlocker(self.diff_parent_edit)
             self.diff_parent_edit.setText(task.manual_root_post_id)
             del blocker
+            self._set_author_tags_text(task.author_tags)
+        else:
+            self._set_author_tags_text([])
         self._render_active_task()
 
     def _set_diff_parent_row_visible(self, visible: bool) -> None:
         self.diff_parent_label.setVisible(visible)
         self.diff_parent_edit.setVisible(visible)
         self.diff_parent_save_btn.setVisible(visible)
+
+    def _set_diff_author_tag_controls_visible(self, visible: bool) -> None:
+        self.author_tags_label.setVisible(visible)
+        self.author_tags_editor.setVisible(visible)
+
+    def _save_author_tags_from_ui(self) -> None:
+        task = self._active_task()
+        if task is None or task.task_type is not TaskType.DIFF_GROUP:
+            return
+        tags = self._parse_manual_tags(self.author_tags_editor.toPlainText())
+        if tags == list(task.author_tags):
+            return
+        self.service.set_author_tags(task.task_id, tags)
+        self._append_log(f"已保存作者标签：{len(tags)} 个")
+        self._render_active_task()
 
     def _save_diff_parent_post_id(self) -> None:
         task = self._active_task()
@@ -709,6 +1023,9 @@ class MainWindow(QMainWindow):
         self.queue_list.clear()
         if task is None:
             del blocker
+            self.detail.clear()
+            self._set_tag_editor_text([])
+            self._clear_preview()
             return
 
         for item in sorted(task.items, key=lambda x: x.order_index):
@@ -720,6 +1037,10 @@ class MainWindow(QMainWindow):
                 self.queue_list.setCurrentItem(list_item)
 
         del blocker
+        if self.queue_list.count() == 0:
+            self.detail.clear()
+            self._set_tag_editor_text([])
+            self._clear_preview()
         if current_item_id is not None:
             self._restore_queue_focus(current_item_id, had_focus)
 
@@ -745,7 +1066,7 @@ class MainWindow(QMainWindow):
             f"状态: {item.status.value}   类型: {item.file_type.value}   "
             f"post: {item.created_post_id or '-'}   parent: {item.parent_post_id or '-'}"
         )
-        tags, manual_cleared = self._effective_item_tags(item)
+        tags, manual_cleared = self._effective_item_tags(task, item)
         if tags:
             preview = tags[:10]
             suffix = " …" if len(tags) > 10 else ""
@@ -757,12 +1078,47 @@ class MainWindow(QMainWindow):
         return "\n".join([line1, line2, line3])
 
     @staticmethod
-    def _effective_item_tags(item) -> tuple[list[str], bool]:
+    def _item_base_tags(item) -> tuple[list[str], bool]:
         if item.final_tags_locked:
             return list(item.final_tags), len(item.final_tags) == 0
         if item.final_tags:
             return list(item.final_tags), False
         return list(item.detected_tags), False
+
+    @staticmethod
+    def _merge_tags(base_tags: list[str], extra_tags: list[str]) -> list[str]:
+        merged: list[str] = []
+        seen: set[str] = set()
+        for tag in [*base_tags, *extra_tags]:
+            clean = str(tag).strip()
+            if not clean:
+                continue
+            key = clean.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(clean)
+        return merged
+
+    @staticmethod
+    def _strip_tags(source_tags: list[str], excluded_tags: list[str]) -> list[str]:
+        excluded = {str(tag).strip().lower() for tag in excluded_tags if str(tag).strip()}
+        result: list[str] = []
+        for tag in source_tags:
+            clean = str(tag).strip()
+            if not clean or clean.lower() in excluded:
+                continue
+            result.append(clean)
+        return result
+
+    def _task_author_tags(self, task: UploadTask | None) -> list[str]:
+        if task is None or task.task_type is not TaskType.DIFF_GROUP:
+            return []
+        return list(task.author_tags)
+
+    def _effective_item_tags(self, task: UploadTask, item) -> tuple[list[str], bool]:
+        base_tags, manual_cleared = self._item_base_tags(item)
+        return self._merge_tags(base_tags, self._task_author_tags(task)), manual_cleared
 
     def _pick_files(self) -> None:
         files, _ = QFileDialog.getOpenFileNames(self, "选择文件")
@@ -813,6 +1169,7 @@ class MainWindow(QMainWindow):
     def _show_item_detail(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:
         self.detail.clear()
         self._set_tag_editor_text([])
+        self._clear_preview()
         if current is None:
             return
         task = self._active_task()
@@ -828,22 +1185,64 @@ class MainWindow(QMainWindow):
                 f"status: {item.status.value}",
                 f"detected_tags ({len(item.detected_tags)}): {item.detected_tags}",
                 f"final_tags ({len(item.final_tags)}): {item.final_tags}",
+                f"author_tags ({len(self._task_author_tags(task))}): {self._task_author_tags(task)}",
+                f"effective_tags ({len(self._effective_item_tags(task, item)[0])}): {self._effective_item_tags(task, item)[0]}",
                 f"final_tags_locked: {item.final_tags_locked}",
                 f"parent_post_id: {item.parent_post_id}",
                 f"created_post_id: {item.created_post_id}",
                 f"error: {item.error_message}",
             ]
             self.detail.setPlainText("\n".join(lines))
-            tag_source, _ = self._effective_item_tags(item)
+            self._set_preview_from_path(item.file_path)
+            tag_source, _ = self._item_base_tags(item)
             if tag_source:
                 self._set_tag_editor_text(tag_source)
             self._update_tag_count_display()
+            if task.task_type is TaskType.DIFF_GROUP:
+                self._set_author_tags_text(task.author_tags)
+            else:
+                self._set_author_tags_text([])
             return
 
     def _set_tag_editor_text(self, tags: list[str]) -> None:
         blocker = QSignalBlocker(self.tag_editor)
         try:
             self.tag_editor.setPlainText("\n".join(tags))
+        finally:
+            del blocker
+
+    def _clear_preview(self) -> None:
+        self.preview_label.clear()
+        self.preview_label.setText(self._tr("preview_empty"))
+
+    def _set_preview_from_path(self, file_path: str) -> None:
+        suffix = Path(file_path).suffix.lower()
+        if suffix not in {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}:
+            self.preview_label.clear()
+            self.preview_label.setText(self._tr("preview_unsupported"))
+            return
+
+        pixmap = QPixmap(file_path)
+        if pixmap.isNull():
+            self.preview_label.clear()
+            self.preview_label.setText(self._tr("preview_failed"))
+            return
+
+        target_width = max(1, self.preview_label.contentsRect().width())
+        target_height = max(1, self.preview_label.contentsRect().height())
+        scaled = pixmap.scaled(
+            target_width,
+            target_height,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self.preview_label.setText("")
+        self.preview_label.setPixmap(scaled)
+
+    def _set_author_tags_text(self, tags: list[str]) -> None:
+        blocker = QSignalBlocker(self.author_tags_editor)
+        try:
+            self.author_tags_editor.setPlainText("\n".join(tags))
         finally:
             del blocker
 
@@ -858,44 +1257,62 @@ class MainWindow(QMainWindow):
                 return task, item
         return task, None
 
-    def _flush_pending_local_tag_sync(self) -> None:
+    def _selected_item_tag_state(self):
         task, item = self._selected_item_context()
-        if task is None or item is None or item.item_id not in self.pending_review_item_ids:
+        if task is None or item is None:
+            return None
+        base_tags = self._parse_manual_tags(self.tag_editor.toPlainText())
+        author_tags = self._task_author_tags(task)
+        effective_tags = self._merge_tags(base_tags, author_tags)
+        return task, item, base_tags, author_tags, effective_tags
+
+    def _sync_effective_tags_if_changed(self, item, effective_tags: list[str]) -> bool:
+        last_synced = self._last_synced_effective_tags_by_item.get(item.item_id)
+        if last_synced == effective_tags:
+            return False
+        self.runner.send_tag_sync(item.item_id, effective_tags)
+        self._last_synced_effective_tags_by_item[item.item_id] = list(effective_tags)
+        return True
+
+    def _flush_pending_local_tag_sync(self) -> None:
+        state = self._selected_item_tag_state()
+        if state is None:
             return
-        tags = self._parse_manual_tags(self.tag_editor.toPlainText())
-        if tags == self._last_flushed_tags:
+        task, item, base_tags, _author_tags, effective_tags = state
+        if item.item_id not in self.pending_review_item_ids:
             return
-        self._last_flushed_tags = list(tags)
-        self.service.update_item_tags(task.task_id, item.item_id, tags)
-        self.runner.send_tag_sync(item.item_id, tags)
-        self._append_log(f"本地标签已推送到网页：{item.file_name} ({len(tags)} tags)")
-        self._render_active_task()
+        self.service.update_item_tags(task.task_id, item.item_id, base_tags)
+        if self._sync_effective_tags_if_changed(item, effective_tags):
+            self._append_log(f"本地标签已推送到网页：{item.file_name} ({len(effective_tags)} tags)")
+            self._render_active_task()
 
     def _apply_manual_tags(self) -> None:
-        task, item = self._selected_item_context()
-        if task is None or item is None:
+        state = self._selected_item_tag_state()
+        if state is None:
             return
-        raw = self.tag_editor.toPlainText().strip()
-        if not raw:
-            tags: list[str] = []
+        task, item, base_tags, _author_tags, effective_tags = state
+        self.service.update_item_tags(task.task_id, item.item_id, base_tags)
+        changed = self._sync_effective_tags_if_changed(item, effective_tags)
+        if changed:
+            self._append_log(f"已更新标签：{item.file_name} ({len(effective_tags)} tags)")
+            self._render_active_task()
         else:
-            tags = self._parse_manual_tags(raw)
-        self.service.update_item_tags(task.task_id, item.item_id, tags)
-        self._last_flushed_tags = list(tags)
-        self.runner.send_tag_sync(item.item_id, tags)
-        self._append_log(f"已更新标签：{item.file_name} ({len(tags)} tags)")
-        self._render_active_task()
+            self._append_log(f"已更新标签：{item.file_name}（无变化）")
 
     def _reset_tags_from_detected(self) -> None:
-        task, item = self._selected_item_context()
-        if task is None or item is None:
+        state = self._selected_item_tag_state()
+        if state is None:
             return
-        self.service.update_item_tags(task.task_id, item.item_id, list(item.detected_tags))
-        self._last_flushed_tags = list(item.detected_tags)
-        self.runner.send_tag_sync(item.item_id, list(item.detected_tags))
-        self._set_tag_editor_text(item.detected_tags)
-        self._append_log(f"已还原检测标签：{item.file_name}")
-        self._render_active_task()
+        task, item, _base_tags, author_tags, _effective_tags = state
+        base_tags = list(item.detected_tags)
+        effective_tags = self._merge_tags(base_tags, author_tags)
+        self.service.update_item_tags(task.task_id, item.item_id, base_tags)
+        self._set_tag_editor_text(base_tags)
+        if self._sync_effective_tags_if_changed(item, effective_tags):
+            self._append_log(f"已还原检测标签：{item.file_name} ({len(effective_tags)} tags)")
+            self._render_active_task()
+        else:
+            self._append_log(f"已还原检测标签：{item.file_name}")
 
     @staticmethod
     def _parse_manual_tags(raw: str) -> list[str]:
@@ -913,6 +1330,7 @@ class MainWindow(QMainWindow):
         return deduped
 
     def _start_task(self) -> None:
+        self._save_author_tags_from_ui()
         task = self._active_task()
         if task is None:
             return
@@ -981,36 +1399,29 @@ class MainWindow(QMainWindow):
         target_item_id = self._current_review_item_id()
         if not target_item_id:
             return
-        if action == "confirm":
-            edited_tags = self._parse_manual_tags(self.tag_editor.toPlainText())
-            if len(edited_tags) < 20:
-                reply = QMessageBox.warning(
-                    self, "\u6807\u7b7e不足",
-                    f"\u5f53\u524d仅有 {len(edited_tags)} 个标签。Sankaku 要求至少 20 个才能提交。\n\n是否仍然尝试强行提交？",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                    QMessageBox.StandardButton.No
-                )
-                if reply == QMessageBox.StandardButton.No:
-                    return
-            self._flush_pending_local_tag_sync()
         tags_override = None
         tags_override_allow_empty = False
         if action == "confirm":
-            task, item = self._selected_item_context()
-            if task is not None and item is not None:
-                edited_tags = self._parse_manual_tags(self.tag_editor.toPlainText())
-                current_tags, _ = self._effective_item_tags(item)
-                force_override = bool(item.final_tags_locked)
-                if edited_tags != current_tags:
-                    tags_override = edited_tags
-                    tags_override_allow_empty = self.tag_editor.toPlainText().strip() == ""
-                    self.service.update_item_tags(task.task_id, item.item_id, edited_tags)
+            state = self._selected_item_tag_state()
+            if state is not None:
+                task, item, base_tags, _author_tags, effective_tags = state
+                if len(effective_tags) < 20:
+                    reply = QMessageBox.warning(
+                        self, "标签不足",
+                        f"当前仅有 {len(effective_tags)} 个标签。Sankaku 要求至少 20 个才能提交。\n\n是否仍然尝试强行提交？",
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                        QMessageBox.StandardButton.No
+                    )
+                    if reply == QMessageBox.StandardButton.No:
+                        return
+                current_effective = self._last_synced_effective_tags_by_item.get(item.item_id)
+                tags_override_allow_empty = self.tag_editor.toPlainText().strip() == ""
+                self.service.update_item_tags(task.task_id, item.item_id, base_tags)
+                if effective_tags != current_effective:
+                    tags_override = effective_tags
+                    self._last_synced_effective_tags_by_item[item.item_id] = list(effective_tags)
+                    self._append_log(f"确认前应用标签：{item.file_name} ({len(effective_tags)} tags)")
                     self._render_active_task()
-                    self._append_log(f"确认前应用本地标签编辑：{item.file_name} ({len(edited_tags)} tags)")
-                elif force_override:
-                    tags_override = edited_tags
-                    tags_override_allow_empty = self.tag_editor.toPlainText().strip() == ""
-                    self._append_log(f"确认前强制应用本地标签：{item.file_name} ({len(edited_tags)} tags)")
 
         self.runner.send_decision(
             target_item_id,
@@ -1062,6 +1473,9 @@ class MainWindow(QMainWindow):
         task_id = str(payload.get("task_id") or "")
         item_id = str(payload.get("item_id") or "")
         tags = list(payload.get("ai_tags") or [])
+        task = self._active_task() if self.active_task_id == task_id else None
+        author_tags = self._task_author_tags(task)
+        base_tags = self._strip_tags(tags, author_tags)
         self.pending_review_item_id = item_id
         self.pending_review_item_ids.add(item_id)
         self._set_review_buttons_enabled(True)
@@ -1069,12 +1483,14 @@ class MainWindow(QMainWindow):
             task_id,
             item_id,
             status=ItemStatus.WAITING_USER_CONFIRM,
-            detected_tags=tags,
-            final_tags=tags,
+            detected_tags=base_tags,
+            final_tags=base_tags,
         )
-        self._last_flushed_tags = list(tags)
+        self._last_synced_effective_tags_by_item[item_id] = list(tags)
         if self.queue_list.currentItem() is not None and str(self.queue_list.currentItem().data(Qt.ItemDataRole.UserRole)) == item_id:
-            self._set_tag_editor_text(tags)
+            self._set_tag_editor_text(base_tags)
+            if task is not None and task.task_type is TaskType.DIFF_GROUP:
+                self._set_author_tags_text(author_tags)
         self._append_log(f"等待人工确认：{payload.get('file_name')} tags={tags}")
         self._render_active_task()
 
@@ -1082,20 +1498,21 @@ class MainWindow(QMainWindow):
         task_id = str(payload.get("task_id") or "")
         item_id = str(payload.get("item_id") or "")
         tags = list(payload.get("ai_tags") or [])
+        task = self._active_task() if self.active_task_id == task_id else None
+        author_tags = self._task_author_tags(task)
+        base_tags = self._strip_tags(tags, author_tags)
         self.pending_review_item_id = item_id
         self.pending_review_item_ids.add(item_id)
         self._set_review_buttons_enabled(True)
-        self.service.update_item_result(task_id, item_id, status=ItemStatus.WAITING_USER_CONFIRM, final_tags=tags)
-        
-        # Smart sync: only update UI if the web tags are actually different from what we last sent
+        self.service.update_item_result(task_id, item_id, status=ItemStatus.WAITING_USER_CONFIRM, final_tags=base_tags)
+        self._last_synced_effective_tags_by_item[item_id] = list(tags)
         if item_id in self.pending_review_item_ids:
             current = self.queue_list.currentItem()
             if current is not None and str(current.data(Qt.ItemDataRole.UserRole)) == item_id:
-                if set(tags) != set(self._last_flushed_tags):
-                    self._set_tag_editor_text(tags)
-                    self._last_flushed_tags = list(tags)
-                    self._update_tag_count_display()
-                    self._append_log(f"\u7f51\u9875\u6807\u7b7e\u5df2\u540c\u6b65\uff1a{payload.get('file_name')} ({len(tags)} tags)")
+                self._set_tag_editor_text(base_tags)
+                if task is not None and task.task_type is TaskType.DIFF_GROUP:
+                    self._set_author_tags_text(author_tags)
+        self._append_log(f"网页标签已同步：{payload.get('file_name')} ({len(tags)} tags)")
         self._render_active_task()
 
     def _on_item_result(self, payload: dict) -> None:

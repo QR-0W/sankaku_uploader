@@ -153,6 +153,7 @@ class UploadTask:
     status: TaskStatus = TaskStatus.PENDING
     root_post_id: str = ""
     manual_root_post_id: str = ""  # user-supplied parent post ID for diff mode
+    author_tags: list[str] = field(default_factory=list)
     items: list[UploadItem] = field(default_factory=list)
     runtime: TaskRuntimeState | None = None
     created_at: str = field(default_factory=utc_now_iso)
@@ -268,6 +269,7 @@ class UploadTask:
             "status": self.status.value,
             "root_post_id": self.root_post_id,
             "manual_root_post_id": self.manual_root_post_id,
+            "author_tags": list(self.author_tags),
             "items": [item.to_dict() for item in self.items],
             "runtime": self.runtime.to_dict() if self.runtime else None,
             "created_at": self.created_at,
@@ -283,6 +285,7 @@ class UploadTask:
             status=TaskStatus(str(data.get("status") or TaskStatus.PENDING.value)),
             root_post_id=str(data.get("root_post_id") or ""),
             manual_root_post_id=str(data.get("manual_root_post_id") or ""),
+            author_tags=list(data.get("author_tags") or []),
             items=[UploadItem.from_dict(item) for item in data.get("items") or []],
             runtime=TaskRuntimeState.from_dict(data["runtime"]) if data.get("runtime") else None,
             created_at=str(data.get("created_at") or utc_now_iso()),
