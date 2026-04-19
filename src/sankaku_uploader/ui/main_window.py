@@ -418,14 +418,6 @@ class MainWindow(QMainWindow):
         editor_layout.setContentsMargins(0, 0, 0, 0)
         editor_layout.setSpacing(6)
 
-        tag_header_layout = QHBoxLayout()
-        tag_header_layout.addWidget(QLabel("Manual tags (line or comma separated)"))
-        self.tag_count_label = QLabel("0 / 20")
-        self.tag_count_label.setStyleSheet("color: #f44336; font-weight: bold;")
-        tag_header_layout.addStretch()
-        tag_header_layout.addWidget(self.tag_count_label)
-        editor_layout.addLayout(tag_header_layout)
-
         self.author_tags_label = QLabel("Author tags (diff queue only)")
         editor_layout.addWidget(self.author_tags_label)
         self.author_tags_editor = QPlainTextEdit()
@@ -438,6 +430,14 @@ class MainWindow(QMainWindow):
         self.author_tags_timer.timeout.connect(self._save_author_tags_from_ui)
         self.author_tags_editor.textChanged.connect(lambda: self.author_tags_timer.start())
         self._set_diff_author_tag_controls_visible(False)
+
+        tag_header_layout = QHBoxLayout()
+        tag_header_layout.addWidget(QLabel("Manual tags (line or comma separated)"))
+        self.tag_count_label = QLabel("0 / 20")
+        self.tag_count_label.setStyleSheet("color: #f44336; font-weight: bold;")
+        tag_header_layout.addStretch()
+        tag_header_layout.addWidget(self.tag_count_label)
+        editor_layout.addLayout(tag_header_layout)
 
         self.tag_editor = TagEditorWidget()
         self.tag_editor.setPlaceholderText("e.g.\n1girl\nsmile\noutdoors")
