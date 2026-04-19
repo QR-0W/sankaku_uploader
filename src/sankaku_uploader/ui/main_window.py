@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QTextEdit,
     QPlainTextEdit,
     QSplitter,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -389,8 +390,8 @@ class MainWindow(QMainWindow):
         self.preview_label = QLabel("暂无预览")
         self.preview_label.setObjectName("preview_box")
         self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview_label.setMinimumHeight(220)
-        self.preview_label.setMaximumHeight(300)
+        self.preview_label.setFixedHeight(260)
+        self.preview_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         right_layout.addWidget(self.preview_label)
         right_layout.addWidget(QLabel("\u5f53\u524d\u6587\u4ef6\u8be6\u60c5"))
         self.detail = QPlainTextEdit()
@@ -978,11 +979,11 @@ class MainWindow(QMainWindow):
             self.preview_label.setText("预览加载失败")
             return
 
-        target_size = self.preview_label.size()
-        if target_size.width() <= 0 or target_size.height() <= 0:
-            target_size = self.preview_label.minimumSizeHint()
+        target_width = max(1, self.preview_label.contentsRect().width())
+        target_height = max(1, self.preview_label.contentsRect().height())
         scaled = pixmap.scaled(
-            target_size,
+            target_width,
+            target_height,
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
