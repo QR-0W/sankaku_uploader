@@ -1060,14 +1060,9 @@ class SankakuAutomationClient:
 
             if alert_type == "duplicate":
                 existing_id = post_id # Fallback to detected ID if extraction fails
-                # Try to extract ID from alert text
-                match_id = re.search(r"#( [A-Za-z0-9]{5,32}|[A-Za-z0-9]{5,32})", alert_text)
-                if not match_id:
-                    # Try searching for numeric ID or common post ID patterns in the text
-                    match_id = re.search(r"(?:posts/|post #|post |#)(\w+)", alert_text, re.I)
-
-                if match_id:
-                    existing_id = match_id.group(1).strip()
+                alert_post_id = self._extract_post_id_from_alert_text(alert_text)
+                if alert_post_id:
+                    existing_id = alert_post_id
                     self._trace(f"{item.file_name}: extracted existing post_id={existing_id} from alert")
 
                 if not existing_id and post_id:
@@ -1381,6 +1376,18 @@ class SankakuAutomationClient:
         ):
             return "tag_check_required", text
         return "unknown", text
+
+    @staticmethod
+    def _extract_post_id_from_alert_text(alert_text: str) -> str:
+        if not alert_text:
+            return ""
+        candidates: list[str] = []
+        candidates.extend(re.findall(r"/posts/([A-Za-z0-9]{5,64})", alert_text, flags=re.I))
+        candidates.extend(re.findall(r"post\s*#\s*([A-Za-z0-9]{5,64})", alert_text, flags=re.I))
+        candidates.extend(re.findall(r"post\s*id[:=]\s*([A-Za-z0-9]{5,64})", alert_text, flags=re.I))
+        candidates.extend(re.findall(r"id[:=]\s*([A-Za-z0-9]{5,64})", alert_text, flags=re.I))
+        normalized = SankakuAutomationClient._normalize_post_ids(candidates)
+        return normalized[0] if normalized else ""
 
     def _wait_for_uploaded_post(
         self,

@@ -413,6 +413,16 @@ def test_detect_tag_check_required_ignores_unrelated_text() -> None:
     assert client._detect_page_alerts(page) == ("unknown", "上传完成，没有图片")
 
 
+def test_extract_post_id_from_alert_text_rejects_short_tokens() -> None:
+    client = _build_client()
+    assert client._extract_post_id_from_alert_text("duplicate post id=as") == ""
+
+
+def test_extract_post_id_from_alert_text_accepts_explicit_long_ids() -> None:
+    client = _build_client()
+    assert client._extract_post_id_from_alert_text("duplicate post id=abc1234") == "abc1234"
+
+
 def test_upload_items_uses_concurrent_path_for_normal_batches(monkeypatch) -> None:
     client = _build_client()
     calls: list[int] = []
