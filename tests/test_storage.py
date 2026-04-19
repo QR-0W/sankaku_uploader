@@ -8,6 +8,7 @@ def test_repository_round_trip_tasks_and_settings(tmp_path: Path) -> None:
     repo = JsonRepository(base_dir=tmp_path)
 
     task = UploadTask(task_name="task", task_type=TaskType.NORMAL_BATCH)
+    task.author_tags = ["artist_id_1"]
     file_path = tmp_path / "a.png"
     file_path.write_text("x", encoding="utf-8")
     task.add_paths([file_path])
@@ -16,6 +17,7 @@ def test_repository_round_trip_tasks_and_settings(tmp_path: Path) -> None:
     loaded = repo.load_tasks()
     assert len(loaded) == 1
     assert loaded[0].task_name == "task"
+    assert loaded[0].author_tags == ["artist_id_1"]
     assert loaded[0].items[0].file_name == "a.png"
 
     settings = Settings(upload_page_url="https://example.com/upload", headless=False, max_concurrent_pages=16)

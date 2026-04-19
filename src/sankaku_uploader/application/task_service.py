@@ -13,8 +13,11 @@ class TaskService:
 
         # Migrate from legacy two-fixed-task format: accept any number of tasks now.
         if not loaded_tasks:
-            # Bootstrap with one default task if there's nothing saved at all
-            loaded_tasks = [UploadTask(task_name="普通队列 1", task_type=TaskType.NORMAL_BATCH)]
+            # Bootstrap the two task modes expected by the UI if there's nothing saved at all.
+            loaded_tasks = [
+                UploadTask(task_name="普通队列 1", task_type=TaskType.NORMAL_BATCH),
+                UploadTask(task_name="差分队列 1", task_type=TaskType.DIFF_GROUP),
+            ]
 
         self.tasks: list[UploadTask] = loaded_tasks
         self._save()
@@ -111,6 +114,11 @@ class TaskService:
     def set_manual_root_post_id(self, task_id: str, post_id: str) -> None:
         task = self.get_task(task_id)
         task.manual_root_post_id = post_id.strip()
+        self._save()
+
+    def set_author_tags(self, task_id: str, tags: list[str]) -> None:
+        task = self.get_task(task_id)
+        task.author_tags = list(tags)
         self._save()
 
     def retry_failed_items(self, task_id: str) -> int:

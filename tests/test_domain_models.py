@@ -54,3 +54,11 @@ def test_retry_failed_items_reset_to_pending(tmp_path: Path) -> None:
     assert task.retry_failed_items() == 1
     assert task.items[0].status is ItemStatus.PENDING
     assert task.items[0].error_message == ""
+
+
+def test_author_tags_round_trip_in_task_serialization() -> None:
+    task = UploadTask(task_name="diff", task_type=TaskType.DIFF_GROUP, author_tags=["artist_id_1", "artist_id_2"])
+
+    restored = UploadTask.from_dict(task.to_dict())
+
+    assert restored.author_tags == ["artist_id_1", "artist_id_2"]

@@ -213,8 +213,8 @@ class MainWindow(QMainWindow):
         self.active_task_id: str | None = None
         self.pending_review_item_id: str | None = None
         self.pending_review_item_ids: set[str] = set()
-        self._last_flushed_tags: list[str] = []
         self._upload_all_queue: list = []  # used by "upload all" feature
+        self._last_synced_effective_tags_by_item: dict[str, list[str]] = {}
 
         self._build_ui()
         self._apply_theme()
@@ -392,6 +392,20 @@ class MainWindow(QMainWindow):
         tag_header_layout.addWidget(self.tag_count_label)
         right_layout.addLayout(tag_header_layout)
 
+        self.author_tags_label = QLabel("作者标签（仅差分队列，队列级）")
+        right_layout.addWidget(self.author_tags_label)
+        self.author_tags_editor = QPlainTextEdit()
+        self.author_tags_editor.setPlaceholderText("每行一个 tag，例如：\nauthor_id_123\nsource_name")
+        self.author_tags_editor.setMaximumHeight(96)
+        right_layout.addWidget(self.author_tags_editor)
+        self.author_tags_timer = QTimer(self)
+        self.author_tags_timer.setSingleShot(True)
+        self.author_tags_timer.setInterval(350)
+        self.author_tags_timer.timeout.connect(self._save_author_tags_from_ui)
+        self.author_tags_editor.textChanged.connect(lambda: self.author_tags_timer.start())
+        self._set_diff_author_tag_controls_visible(False)
+
+        right_layout.addWidget(QLabel("手动标签编辑（每行或逗号分隔）"))
         self.tag_editor = TagEditorWidget()
         self.tag_editor.setPlaceholderText("\u4f8b\u5982\uff1a\n1girl\nsmile\noutdoors")
         self.tag_editor.setMaximumHeight(140)
@@ -666,20 +680,40 @@ class MainWindow(QMainWindow):
     def _on_task_selected(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:
         if current is None:
             return
+        self._save_author_tags_from_ui()
         self.active_task_id = str(current.data(Qt.ItemDataRole.UserRole))
         task = self._active_task()
         is_diff = task is not None and task.task_type is TaskType.DIFF_GROUP
         self._set_diff_parent_row_visible(is_diff)
+        self._set_diff_author_tag_controls_visible(is_diff)
         if is_diff and task is not None:
             blocker = QSignalBlocker(self.diff_parent_edit)
             self.diff_parent_edit.setText(task.manual_root_post_id)
             del blocker
+            self._set_author_tags_text(task.author_tags)
+        else:
+            self._set_author_tags_text([])
         self._render_active_task()
 
     def _set_diff_parent_row_visible(self, visible: bool) -> None:
         self.diff_parent_label.setVisible(visible)
         self.diff_parent_edit.setVisible(visible)
         self.diff_parent_save_btn.setVisible(visible)
+
+    def _set_diff_author_tag_controls_visible(self, visible: bool) -> None:
+        self.author_tags_label.setVisible(visible)
+        self.author_tags_editor.setVisible(visible)
+
+    def _save_author_tags_from_ui(self) -> None:
+        task = self._active_task()
+        if task is None or task.task_type is not TaskType.DIFF_GROUP:
+            return
+        tags = self._parse_manual_tags(self.author_tags_editor.toPlainText())
+        if tags == list(task.author_tags):
+            return
+        self.service.set_author_tags(task.task_id, tags)
+        self._append_log(f"已保存作者标签：{len(tags)} 个")
+        self._render_active_task()
 
     def _save_diff_parent_post_id(self) -> None:
         task = self._active_task()
@@ -745,7 +779,7 @@ class MainWindow(QMainWindow):
             f"状态: {item.status.value}   类型: {item.file_type.value}   "
             f"post: {item.created_post_id or '-'}   parent: {item.parent_post_id or '-'}"
         )
-        tags, manual_cleared = self._effective_item_tags(item)
+        tags, manual_cleared = self._effective_item_tags(task, item)
         if tags:
             preview = tags[:10]
             suffix = " …" if len(tags) > 10 else ""
@@ -757,12 +791,47 @@ class MainWindow(QMainWindow):
         return "\n".join([line1, line2, line3])
 
     @staticmethod
-    def _effective_item_tags(item) -> tuple[list[str], bool]:
+    def _item_base_tags(item) -> tuple[list[str], bool]:
         if item.final_tags_locked:
             return list(item.final_tags), len(item.final_tags) == 0
         if item.final_tags:
             return list(item.final_tags), False
         return list(item.detected_tags), False
+
+    @staticmethod
+    def _merge_tags(base_tags: list[str], extra_tags: list[str]) -> list[str]:
+        merged: list[str] = []
+        seen: set[str] = set()
+        for tag in [*base_tags, *extra_tags]:
+            clean = str(tag).strip()
+            if not clean:
+                continue
+            key = clean.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(clean)
+        return merged
+
+    @staticmethod
+    def _strip_tags(source_tags: list[str], excluded_tags: list[str]) -> list[str]:
+        excluded = {str(tag).strip().lower() for tag in excluded_tags if str(tag).strip()}
+        result: list[str] = []
+        for tag in source_tags:
+            clean = str(tag).strip()
+            if not clean or clean.lower() in excluded:
+                continue
+            result.append(clean)
+        return result
+
+    def _task_author_tags(self, task: UploadTask | None) -> list[str]:
+        if task is None or task.task_type is not TaskType.DIFF_GROUP:
+            return []
+        return list(task.author_tags)
+
+    def _effective_item_tags(self, task: UploadTask, item) -> tuple[list[str], bool]:
+        base_tags, manual_cleared = self._item_base_tags(item)
+        return self._merge_tags(base_tags, self._task_author_tags(task)), manual_cleared
 
     def _pick_files(self) -> None:
         files, _ = QFileDialog.getOpenFileNames(self, "选择文件")
@@ -828,22 +897,35 @@ class MainWindow(QMainWindow):
                 f"status: {item.status.value}",
                 f"detected_tags ({len(item.detected_tags)}): {item.detected_tags}",
                 f"final_tags ({len(item.final_tags)}): {item.final_tags}",
+                f"author_tags ({len(self._task_author_tags(task))}): {self._task_author_tags(task)}",
+                f"effective_tags ({len(self._effective_item_tags(task, item)[0])}): {self._effective_item_tags(task, item)[0]}",
                 f"final_tags_locked: {item.final_tags_locked}",
                 f"parent_post_id: {item.parent_post_id}",
                 f"created_post_id: {item.created_post_id}",
                 f"error: {item.error_message}",
             ]
             self.detail.setPlainText("\n".join(lines))
-            tag_source, _ = self._effective_item_tags(item)
+            tag_source, _ = self._item_base_tags(item)
             if tag_source:
                 self._set_tag_editor_text(tag_source)
             self._update_tag_count_display()
+            if task.task_type is TaskType.DIFF_GROUP:
+                self._set_author_tags_text(task.author_tags)
+            else:
+                self._set_author_tags_text([])
             return
 
     def _set_tag_editor_text(self, tags: list[str]) -> None:
         blocker = QSignalBlocker(self.tag_editor)
         try:
             self.tag_editor.setPlainText("\n".join(tags))
+        finally:
+            del blocker
+
+    def _set_author_tags_text(self, tags: list[str]) -> None:
+        blocker = QSignalBlocker(self.author_tags_editor)
+        try:
+            self.author_tags_editor.setPlainText("\n".join(tags))
         finally:
             del blocker
 
@@ -858,44 +940,62 @@ class MainWindow(QMainWindow):
                 return task, item
         return task, None
 
-    def _flush_pending_local_tag_sync(self) -> None:
+    def _selected_item_tag_state(self):
         task, item = self._selected_item_context()
-        if task is None or item is None or item.item_id not in self.pending_review_item_ids:
+        if task is None or item is None:
+            return None
+        base_tags = self._parse_manual_tags(self.tag_editor.toPlainText())
+        author_tags = self._task_author_tags(task)
+        effective_tags = self._merge_tags(base_tags, author_tags)
+        return task, item, base_tags, author_tags, effective_tags
+
+    def _sync_effective_tags_if_changed(self, item, effective_tags: list[str]) -> bool:
+        last_synced = self._last_synced_effective_tags_by_item.get(item.item_id)
+        if last_synced == effective_tags:
+            return False
+        self.runner.send_tag_sync(item.item_id, effective_tags)
+        self._last_synced_effective_tags_by_item[item.item_id] = list(effective_tags)
+        return True
+
+    def _flush_pending_local_tag_sync(self) -> None:
+        state = self._selected_item_tag_state()
+        if state is None:
             return
-        tags = self._parse_manual_tags(self.tag_editor.toPlainText())
-        if tags == self._last_flushed_tags:
+        task, item, base_tags, _author_tags, effective_tags = state
+        if item.item_id not in self.pending_review_item_ids:
             return
-        self._last_flushed_tags = list(tags)
-        self.service.update_item_tags(task.task_id, item.item_id, tags)
-        self.runner.send_tag_sync(item.item_id, tags)
-        self._append_log(f"本地标签已推送到网页：{item.file_name} ({len(tags)} tags)")
-        self._render_active_task()
+        self.service.update_item_tags(task.task_id, item.item_id, base_tags)
+        if self._sync_effective_tags_if_changed(item, effective_tags):
+            self._append_log(f"本地标签已推送到网页：{item.file_name} ({len(effective_tags)} tags)")
+            self._render_active_task()
 
     def _apply_manual_tags(self) -> None:
-        task, item = self._selected_item_context()
-        if task is None or item is None:
+        state = self._selected_item_tag_state()
+        if state is None:
             return
-        raw = self.tag_editor.toPlainText().strip()
-        if not raw:
-            tags: list[str] = []
+        task, item, base_tags, _author_tags, effective_tags = state
+        self.service.update_item_tags(task.task_id, item.item_id, base_tags)
+        changed = self._sync_effective_tags_if_changed(item, effective_tags)
+        if changed:
+            self._append_log(f"已更新标签：{item.file_name} ({len(effective_tags)} tags)")
+            self._render_active_task()
         else:
-            tags = self._parse_manual_tags(raw)
-        self.service.update_item_tags(task.task_id, item.item_id, tags)
-        self._last_flushed_tags = list(tags)
-        self.runner.send_tag_sync(item.item_id, tags)
-        self._append_log(f"已更新标签：{item.file_name} ({len(tags)} tags)")
-        self._render_active_task()
+            self._append_log(f"已更新标签：{item.file_name}（无变化）")
 
     def _reset_tags_from_detected(self) -> None:
-        task, item = self._selected_item_context()
-        if task is None or item is None:
+        state = self._selected_item_tag_state()
+        if state is None:
             return
-        self.service.update_item_tags(task.task_id, item.item_id, list(item.detected_tags))
-        self._last_flushed_tags = list(item.detected_tags)
-        self.runner.send_tag_sync(item.item_id, list(item.detected_tags))
-        self._set_tag_editor_text(item.detected_tags)
-        self._append_log(f"已还原检测标签：{item.file_name}")
-        self._render_active_task()
+        task, item, _base_tags, author_tags, _effective_tags = state
+        base_tags = list(item.detected_tags)
+        effective_tags = self._merge_tags(base_tags, author_tags)
+        self.service.update_item_tags(task.task_id, item.item_id, base_tags)
+        self._set_tag_editor_text(base_tags)
+        if self._sync_effective_tags_if_changed(item, effective_tags):
+            self._append_log(f"已还原检测标签：{item.file_name} ({len(effective_tags)} tags)")
+            self._render_active_task()
+        else:
+            self._append_log(f"已还原检测标签：{item.file_name}")
 
     @staticmethod
     def _parse_manual_tags(raw: str) -> list[str]:
@@ -913,6 +1013,7 @@ class MainWindow(QMainWindow):
         return deduped
 
     def _start_task(self) -> None:
+        self._save_author_tags_from_ui()
         task = self._active_task()
         if task is None:
             return
@@ -981,36 +1082,29 @@ class MainWindow(QMainWindow):
         target_item_id = self._current_review_item_id()
         if not target_item_id:
             return
-        if action == "confirm":
-            edited_tags = self._parse_manual_tags(self.tag_editor.toPlainText())
-            if len(edited_tags) < 20:
-                reply = QMessageBox.warning(
-                    self, "\u6807\u7b7e不足",
-                    f"\u5f53\u524d仅有 {len(edited_tags)} 个标签。Sankaku 要求至少 20 个才能提交。\n\n是否仍然尝试强行提交？",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                    QMessageBox.StandardButton.No
-                )
-                if reply == QMessageBox.StandardButton.No:
-                    return
-            self._flush_pending_local_tag_sync()
         tags_override = None
         tags_override_allow_empty = False
         if action == "confirm":
-            task, item = self._selected_item_context()
-            if task is not None and item is not None:
-                edited_tags = self._parse_manual_tags(self.tag_editor.toPlainText())
-                current_tags, _ = self._effective_item_tags(item)
-                force_override = bool(item.final_tags_locked)
-                if edited_tags != current_tags:
-                    tags_override = edited_tags
-                    tags_override_allow_empty = self.tag_editor.toPlainText().strip() == ""
-                    self.service.update_item_tags(task.task_id, item.item_id, edited_tags)
+            state = self._selected_item_tag_state()
+            if state is not None:
+                task, item, base_tags, _author_tags, effective_tags = state
+                if len(effective_tags) < 20:
+                    reply = QMessageBox.warning(
+                        self, "标签不足",
+                        f"当前仅有 {len(effective_tags)} 个标签。Sankaku 要求至少 20 个才能提交。\n\n是否仍然尝试强行提交？",
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                        QMessageBox.StandardButton.No
+                    )
+                    if reply == QMessageBox.StandardButton.No:
+                        return
+                current_effective = self._last_synced_effective_tags_by_item.get(item.item_id)
+                tags_override_allow_empty = self.tag_editor.toPlainText().strip() == ""
+                self.service.update_item_tags(task.task_id, item.item_id, base_tags)
+                if effective_tags != current_effective:
+                    tags_override = effective_tags
+                    self._last_synced_effective_tags_by_item[item.item_id] = list(effective_tags)
+                    self._append_log(f"确认前应用标签：{item.file_name} ({len(effective_tags)} tags)")
                     self._render_active_task()
-                    self._append_log(f"确认前应用本地标签编辑：{item.file_name} ({len(edited_tags)} tags)")
-                elif force_override:
-                    tags_override = edited_tags
-                    tags_override_allow_empty = self.tag_editor.toPlainText().strip() == ""
-                    self._append_log(f"确认前强制应用本地标签：{item.file_name} ({len(edited_tags)} tags)")
 
         self.runner.send_decision(
             target_item_id,
@@ -1062,6 +1156,9 @@ class MainWindow(QMainWindow):
         task_id = str(payload.get("task_id") or "")
         item_id = str(payload.get("item_id") or "")
         tags = list(payload.get("ai_tags") or [])
+        task = self._active_task() if self.active_task_id == task_id else None
+        author_tags = self._task_author_tags(task)
+        base_tags = self._strip_tags(tags, author_tags)
         self.pending_review_item_id = item_id
         self.pending_review_item_ids.add(item_id)
         self._set_review_buttons_enabled(True)
@@ -1069,12 +1166,14 @@ class MainWindow(QMainWindow):
             task_id,
             item_id,
             status=ItemStatus.WAITING_USER_CONFIRM,
-            detected_tags=tags,
-            final_tags=tags,
+            detected_tags=base_tags,
+            final_tags=base_tags,
         )
-        self._last_flushed_tags = list(tags)
+        self._last_synced_effective_tags_by_item[item_id] = list(tags)
         if self.queue_list.currentItem() is not None and str(self.queue_list.currentItem().data(Qt.ItemDataRole.UserRole)) == item_id:
-            self._set_tag_editor_text(tags)
+            self._set_tag_editor_text(base_tags)
+            if task is not None and task.task_type is TaskType.DIFF_GROUP:
+                self._set_author_tags_text(author_tags)
         self._append_log(f"等待人工确认：{payload.get('file_name')} tags={tags}")
         self._render_active_task()
 
@@ -1082,20 +1181,21 @@ class MainWindow(QMainWindow):
         task_id = str(payload.get("task_id") or "")
         item_id = str(payload.get("item_id") or "")
         tags = list(payload.get("ai_tags") or [])
+        task = self._active_task() if self.active_task_id == task_id else None
+        author_tags = self._task_author_tags(task)
+        base_tags = self._strip_tags(tags, author_tags)
         self.pending_review_item_id = item_id
         self.pending_review_item_ids.add(item_id)
         self._set_review_buttons_enabled(True)
-        self.service.update_item_result(task_id, item_id, status=ItemStatus.WAITING_USER_CONFIRM, final_tags=tags)
-        
-        # Smart sync: only update UI if the web tags are actually different from what we last sent
+        self.service.update_item_result(task_id, item_id, status=ItemStatus.WAITING_USER_CONFIRM, final_tags=base_tags)
+        self._last_synced_effective_tags_by_item[item_id] = list(tags)
         if item_id in self.pending_review_item_ids:
             current = self.queue_list.currentItem()
             if current is not None and str(current.data(Qt.ItemDataRole.UserRole)) == item_id:
-                if set(tags) != set(self._last_flushed_tags):
-                    self._set_tag_editor_text(tags)
-                    self._last_flushed_tags = list(tags)
-                    self._update_tag_count_display()
-                    self._append_log(f"\u7f51\u9875\u6807\u7b7e\u5df2\u540c\u6b65\uff1a{payload.get('file_name')} ({len(tags)} tags)")
+                self._set_tag_editor_text(base_tags)
+                if task is not None and task.task_type is TaskType.DIFF_GROUP:
+                    self._set_author_tags_text(author_tags)
+        self._append_log(f"网页标签已同步：{payload.get('file_name')} ({len(tags)} tags)")
         self._render_active_task()
 
     def _on_item_result(self, payload: dict) -> None:

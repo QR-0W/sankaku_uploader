@@ -70,3 +70,14 @@ def test_update_item_tags_allows_manual_clear(tmp_path: Path) -> None:
     loaded = service.get_task(task.task_id)
     assert loaded.items[0].final_tags == []
     assert loaded.items[0].final_tags_locked is True
+
+
+def test_set_author_tags_persists_on_diff_task(tmp_path: Path) -> None:
+    repo = JsonRepository(base_dir=tmp_path)
+    service = TaskService(repo)
+    task = next(t for t in service.list_tasks() if t.task_type == TaskType.DIFF_GROUP)
+
+    service.set_author_tags(task.task_id, ["artist_id_123", "source_x"])
+
+    loaded = service.get_task(task.task_id)
+    assert loaded.author_tags == ["artist_id_123", "source_x"]
